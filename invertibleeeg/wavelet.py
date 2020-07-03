@@ -30,7 +30,6 @@ class Haar1dWavelet(nn.Module):
             xs = [x]
         zs = [wavelet_1d_forward(a_x) for a_x in xs]
         z = th.cat(zs, dim=1)
-        #z = wavelet_1d_forward(x)
         return z, 0
 
     def invert(self, z, fixed=None):

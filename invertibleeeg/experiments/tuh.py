@@ -25,7 +25,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-        'save_folder': '/home/schirrmr/data/exps/invertible-eeg/tuh-single-chan/',
+        'save_folder': '/home/schirrmr/data/exps/invertible-eeg/tuh-single-chan-up-down-random-windows/',
     },
     ]
 
@@ -34,11 +34,11 @@ def get_grid_param_list():
     }]
 
     data_params = dictlistprod({
-        'n_subjects': [100], #'#'
+        'n_subjects': [1000], #'#'
     })
 
     train_params = dictlistprod({
-        'n_epochs': [100],
+        'n_epochs': [200],
     })
 
     random_params= dictlistprod({
@@ -48,6 +48,15 @@ def get_grid_param_list():
     optim_params = dictlistprod({
         'lr': [5e-4],
         'weight_decay': [5e-5],
+    })
+    model_params = dictlistprod({
+        'hidden_channels': [128,512],
+        'n_virtual_chans': [0,1,2],
+        'n_blocks_up': [4,8],
+        'n_blocks_down': [4,8],
+        'n_mixes': [128],
+        'splitter_last': ['haar', 'subsample'],
+        'init_perm_to_identity': [False, True],#False
     })
 
 
@@ -59,6 +68,7 @@ def get_grid_param_list():
         debug_params,
         random_params,
         optim_params,
+        model_params,
     ])
 
     return grid_params
@@ -76,6 +86,13 @@ def run(
         np_th_seed,
         debug,
         n_epochs,
+        n_virtual_chans,
+        hidden_channels,
+        n_blocks_up,
+        n_blocks_down,
+        n_mixes,
+        splitter_last,
+        init_perm_to_identity,
 ):
     kwargs = locals()
     kwargs.pop('ex')
