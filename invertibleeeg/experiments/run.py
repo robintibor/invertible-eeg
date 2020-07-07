@@ -140,8 +140,9 @@ def run_exp(
 
     def augment_virtual_chans(x, noise_factor, n_virtual_chans):
         if n_virtual_chans > 0:
-            return th.cat((x, *[th.randn_like(x) * noise_factor
-                                for _ in range(n_virtual_chans)]), dim=1)
+            virtual_chans = th.randn(
+                x.shape[0], n_virtual_chans, x.shape[2], device=x.device).type_as(x) * noise_factor
+            return th.cat((x, virtual_chans), dim=1)
         else:
             return x
 
