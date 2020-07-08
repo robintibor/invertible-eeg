@@ -1,24 +1,27 @@
-from copy import deepcopy
-import os.path
 import logging
+import os.path
+from copy import deepcopy
+from itertools import islice
 
 import numpy as np
 import torch as th
+from braindecode.datasets.base import BaseConcatDataset
 from braindecode.datasets.tuh import TUHAbnormal
+from braindecode.datautil import load_concat_dataset
 from braindecode.datautil.preprocess import MNEPreproc, NumpyPreproc
 from braindecode.datautil.preprocess import exponential_moving_demean, preprocess
 from braindecode.datautil.windowers import create_fixed_length_windows
 from braindecode.util import set_random_seeds
 from skorch.utils import to_numpy
-from torch.utils.data import Subset
 from tensorboardX import SummaryWriter
+from torch.utils.data import Subset
 
 from invertible.datautil import PreprocessedLoader
 from invertible.gaussian import get_gaussian_log_probs
 from invertible.init import init_all_modules
-from invertible.view_as import flatten_2d
-from invertibleeeg.models.glow import  create_eeg_glow_down, create_eeg_glow_up
 from invertible.noise import GaussianNoise
+from invertible.view_as import flatten_2d
+from invertibleeeg.models.glow import create_eeg_glow_down, create_eeg_glow_up
 
 log = logging.getLogger(__name__)
 
@@ -65,50 +68,67 @@ def run_exp(
         n_mixes,
         splitter_last,
         init_perm_to_identity,
-        output_dir):
+        n_seconds,
+        output_dir,):
+    hparams = locals()
     sfreq = 32
-    n_real_chans = 1
     kernel_length = 9
     noise_factor = 5e-3
     batch_size = 64
+    ids_to_load = None
     if debug:
+        ids_to_load = list(range(60))
         n_subjects = 10
         batch_size = 10
         n_epochs = 5
-    hparams = locals()
     set_random_seeds(np_th_seed, True)
 
     writer = SummaryWriter(output_dir)
     writer.add_hparams(hparams, metric_dict={}, name=output_dir)
     writer.flush()
-    if n_subjects != 1000:
-        log.info("Loading data")
-        dataset = TUHAbnormal(
-            '/data/schirrmr/gemeinl/tuh-abnormal-eeg/raw/v2.0.0/edf/',
-            subject_ids=range(n_subjects),
-            preload=False)
-        preproced = preprocess_tuh(dataset, sfreq=sfreq)
-        # Next, extract the 4-second trials from the dataset.
-        # Create windows using braindecode function for this. It needs parameters to define how
-        # trials should be used.
-    else:
-        log.info("Loading preproced data")
-        preproced = np.load('/home/schirrmr/data/preproced-tuh/t3-32hz-demeaned.pkl.npy', allow_pickle=True).item()
 
-    windows_dataset = create_fixed_length_windows(
-        preproced,
-        start_offset_samples=60 * 50,
-        stop_offset_samples=60 * 50 + 128 * 3,
+    path = '/home/schirrmr/data/preproced-tuh/all-sensors-32-hz/'
+    log.info("Load concat dataset...")
+    dataset = load_concat_dataset(path, preload=False, ids_to_load=ids_to_load)
+    whole_train_set = dataset.split('session')['train']
+    n_max_minutes = int(np.ceil(n_seconds/60) + 2)
+    sfreq = whole_train_set.datasets[0].raw.info['sfreq']
+    log.info("Preprocess concat dataset...")
+    preprocess(whole_train_set, [
+        MNEPreproc('crop', tmin=0, tmax=n_max_minutes * 60, include_tmax=True),
+        NumpyPreproc(fn=lambda x: np.clip(x, -80,80)),
+        NumpyPreproc(fn=lambda x: x / 3),
+        NumpyPreproc(fn=exponential_moving_demean, init_block_size=int(sfreq*10), factor_new=1/(sfreq*5)),
+    ])
+    subject_datasets = whole_train_set.split('subject')
+
+    n_split = int(np.round(n_subjects * 0.75))
+    keys = list(subject_datasets.keys())
+    train_sets = [d for i in range(n_split) for d in subject_datasets[keys[i]].datasets]
+    train_set = BaseConcatDataset(train_sets)
+    valid_sets = [d for i in range(n_split, n_subjects) for d in subject_datasets[keys[i]].datasets]
+    valid_set = BaseConcatDataset(valid_sets)
+
+    train_set = create_fixed_length_windows(
+        train_set,
+        start_offset_samples=60 * 32,
+        stop_offset_samples=60 * 32 + 32 * n_seconds,
         preload=True,
         window_size_samples=128,
         window_stride_samples=64,
         drop_last_window=True,
     )
 
-    whole_train_set = windows_dataset.split('session')['train']
-    n_split = int(np.round(len(whole_train_set) * 0.75))
-    valid_set = Subset(whole_train_set, range(n_split, len(whole_train_set)))
-    train_set = Subset(whole_train_set, range(0, n_split))
+    valid_set = create_fixed_length_windows(
+        valid_set,
+        start_offset_samples=60 * 32,
+        stop_offset_samples=60 * 32 + 32 * n_seconds,
+        preload=True,
+        window_size_samples=128,
+        window_stride_samples=64,
+        drop_last_window=True,
+    )
+
     train_loader = th.utils.data.DataLoader(
         train_set,
         batch_size=batch_size,
@@ -117,11 +137,12 @@ def run_exp(
         drop_last=True)
     valid_loader = th.utils.data.DataLoader(
         valid_set,
-        batch_size=len(valid_set),
+        batch_size=batch_size,
         shuffle=False,
         num_workers=0)
     preproced_loader = PreprocessedLoader(train_loader, GaussianNoise(noise_factor), False)
 
+    n_real_chans = train_set[0][0].shape[0]
     n_chans = n_real_chans + n_virtual_chans
 
     n_up_block = create_eeg_glow_up(
@@ -148,9 +169,7 @@ def run_exp(
 
     init_all_modules(net, th.cat(
         [augment_virtual_chans(x[:, :, 32:32 + 64], noise_factor, n_virtual_chans)
-         for x, y, i in preproced_loader], dim=0).cuda())
-
-
+         for x, y, i in islice(preproced_loader,10)], dim=0).cuda())
 
     optim = th.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
 

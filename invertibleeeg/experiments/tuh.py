@@ -25,7 +25,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-        'save_folder': '/home/schirrmr/data/exps/invertible-eeg/tuh-single-chan-up-down-random-windows/',
+        'save_folder': '/home/schirrmr/data/exps/invertible-eeg/tuh-all-chans/',
     },
     ]
 
@@ -34,7 +34,8 @@ def get_grid_param_list():
     }]
 
     data_params = dictlistprod({
-        'n_subjects': [1000], #'#'
+        'n_subjects': [2076], #'#'
+        'n_seconds': [5*4], # 4 is one window
     })
 
     train_params = dictlistprod({
@@ -50,13 +51,13 @@ def get_grid_param_list():
         'weight_decay': [5e-5],
     })
     model_params = dictlistprod({
-        'hidden_channels': [128,512],
-        'n_virtual_chans': [0,1,2],
+        'hidden_channels': [128,],#512
+        'n_virtual_chans': [0,],#1,2
         'n_blocks_up': [4,8],
         'n_blocks_down': [4,8],
         'n_mixes': [128],
         'splitter_last': ['haar', 'subsample'],
-        'init_perm_to_identity': [False, True],#False
+        'init_perm_to_identity': [True, ],#False#True
     })
 
 
@@ -93,6 +94,7 @@ def run(
         n_mixes,
         splitter_last,
         init_perm_to_identity,
+        n_seconds,
 ):
     kwargs = locals()
     kwargs.pop('ex')
