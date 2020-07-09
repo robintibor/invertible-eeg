@@ -35,7 +35,7 @@ def get_grid_param_list():
 
     data_params = dictlistprod({
         'n_subjects': [2076], #'#'
-        'n_seconds': [5*4], # 4 is one window
+        'n_seconds': [15*4], # 4 is one window
     })
 
     train_params = dictlistprod({
@@ -51,7 +51,7 @@ def get_grid_param_list():
         'weight_decay': [5e-5],
     })
     model_params = dictlistprod({
-        'hidden_channels': [128,],#512
+        'hidden_channels': [512,],#512
         'n_virtual_chans': [0,],#1,2
         'n_blocks_up': [4,8],
         'n_blocks_down': [4,8],
