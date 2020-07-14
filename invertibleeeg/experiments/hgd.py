@@ -19,22 +19,31 @@ def get_grid_param_list():
 
     save_params = [
         {
-        'save_folder': '/home/schirrmr/data/exps/invertible-eeg/tuh-all-chans/',
+        'save_folder': '/home/schirrmr/data/exps/invertible-eeg/hgd-21-ch-32-hz/',
     },
     ]
 
     data_params = dictlistprod({
-        'n_subjects': [2076], #'#'
-        'n_seconds': [15*4], # 4 is one window
-        'dataset_name': ['tuh'], # 4 is one window
+        'subject_id': list(range(1,15)),
+        'dataset_name': ['hgd'], # 4 is one window
     })
 
 
+    model_params = dictlistprod({
+        'hidden_channels': [128,],#512
+        'n_virtual_chans': [0,],#1,2
+        'n_blocks_up': [8],
+        'n_blocks_down': [8],
+        'n_mixes': [128],
+        'splitter_last': ['haar',],
+        'init_perm_to_identity': [True, ],#False#True
+    })
 
 
     grid_params = product_of_list_of_lists_of_dicts([
         save_params,
         data_params,
+        model_params,
     ])
 
     return grid_params

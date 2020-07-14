@@ -2,6 +2,7 @@ import logging
 import os.path
 from copy import deepcopy
 from itertools import islice
+import sys
 
 import numpy as np
 import torch as th
@@ -12,6 +13,7 @@ from braindecode.datautil.preprocess import MNEPreproc, NumpyPreproc
 from braindecode.datautil.preprocess import exponential_moving_demean, preprocess
 from braindecode.datautil.windowers import create_fixed_length_windows
 from braindecode.util import set_random_seeds
+from braindecode.datasets.moabb import MOABBDataset
 from skorch.utils import to_numpy
 from tensorboardX import SummaryWriter
 from torch.utils.data import Subset
@@ -22,83 +24,24 @@ from invertible.init import init_all_modules
 from invertible.noise import GaussianNoise
 from invertible.view_as import flatten_2d
 from invertibleeeg.models.glow import create_eeg_glow_down, create_eeg_glow_up
+from braindecode.datautil.windowers import create_windows_from_events
 
 log = logging.getLogger(__name__)
 
-def load_tuh(n_subjects):
-    dataset = TUHAbnormal(
-        '/data/schirrmr/gemeinl/tuh-abnormal-eeg/raw/v2.0.0/edf/',
-        subject_ids=range(n_subjects),
-        preload=True)
-    return dataset
 
-
-def preprocess_tuh(dataset, sfreq):
-    # making a copy just to be able to rerun preprocessing without
-    # waiting later
-    dataset = deepcopy(dataset)
-
-    # Define preprocessing steps
-    preprocessors = [
-        # convert from volt to microvolt, directly modifying the numpy array
-        MNEPreproc(fn='pick_channels', ch_names=['EEG T3-REF', ], ordered=True),
-        NumpyPreproc(fn=lambda x: x * 1e6),
-        NumpyPreproc(fn=lambda x: np.clip(x, -800, 800)),
-        NumpyPreproc(fn=lambda x: x / 10),
-        MNEPreproc(fn='resample', sfreq=sfreq),
-        # keep only EEG sensors
-        NumpyPreproc(fn=exponential_moving_demean, init_block_size=sfreq * 10, factor_new=1 / (sfreq * 5)),
-    ]
-
-    # Preprocess the data
-    preprocess(dataset, preprocessors)
-    return dataset
-
-def run_exp(
-        n_subjects,
-        lr,
-        weight_decay,
-        np_th_seed,
-        debug,
-        n_epochs,
-        n_virtual_chans,
-        hidden_channels,
-        n_blocks_up,
-        n_blocks_down,
-        n_mixes,
-        splitter_last,
-        init_perm_to_identity,
-        n_seconds,
-        output_dir,):
-    hparams = locals()
-    sfreq = 32
-    kernel_length = 9
-    noise_factor = 5e-3
-    batch_size = 64
-    ids_to_load = None
-    if debug:
-        ids_to_load = list(range(60))
-        n_subjects = 10
-        batch_size = 10
-        n_epochs = 5
-    set_random_seeds(np_th_seed, True)
-
-    writer = SummaryWriter(output_dir)
-    writer.add_hparams(hparams, metric_dict={}, name=output_dir)
-    writer.flush()
-
+def load_train_valid_tuh(n_subjects, n_seconds, ids_to_load):
     path = '/home/schirrmr/data/preproced-tuh/all-sensors-32-hz/'
     log.info("Load concat dataset...")
     dataset = load_concat_dataset(path, preload=False, ids_to_load=ids_to_load)
     whole_train_set = dataset.split('session')['train']
-    n_max_minutes = int(np.ceil(n_seconds/60) + 2)
+    n_max_minutes = int(np.ceil(n_seconds / 60) + 2)
     sfreq = whole_train_set.datasets[0].raw.info['sfreq']
     log.info("Preprocess concat dataset...")
     preprocess(whole_train_set, [
         MNEPreproc('crop', tmin=0, tmax=n_max_minutes * 60, include_tmax=True),
-        NumpyPreproc(fn=lambda x: np.clip(x, -80,80)),
+        NumpyPreproc(fn=lambda x: np.clip(x, -80, 80)),
         NumpyPreproc(fn=lambda x: x / 3),
-        NumpyPreproc(fn=exponential_moving_demean, init_block_size=int(sfreq*10), factor_new=1/(sfreq*5)),
+        NumpyPreproc(fn=exponential_moving_demean, init_block_size=int(sfreq * 10), factor_new=1 / (sfreq * 5)),
     ])
     subject_datasets = whole_train_set.split('subject')
 
@@ -128,6 +71,98 @@ def run_exp(
         window_stride_samples=64,
         drop_last_window=True,
     )
+    return train_set, valid_set
+
+
+def load_train_test_hgd(subject_id):
+    hgd_names = ['Fp2', 'Fp1', 'F4', 'F3', 'C4', 'C3', 'P4', 'P3', 'O2', 'O1', 'F8',
+                 'F7', 'T8', 'T7', 'P8', 'P7', 'M2', 'M1', 'Fz', 'Cz', 'Pz']
+    log.info("Loading dataset..")
+    # using the moabb dataset to load our data
+    dataset = MOABBDataset(dataset_name="Schirrmeister2017", subject_ids=[subject_id])
+    sfreq = 32
+    train_whole_set = dataset.split('run')['train']
+
+    log.info("Preprocessing dataset..")
+    # Define preprocessing steps
+    preprocessors = [
+        # convert from volt to microvolt, directly modifying the numpy array
+        MNEPreproc(fn='set_eeg_reference', ref_channels='average',),
+        MNEPreproc(fn='pick_channels', ch_names=hgd_names, ordered=True),
+        NumpyPreproc(fn=lambda x: x * 1e6 ),
+        NumpyPreproc(fn=lambda x: np.clip(x, -800,800)),
+        NumpyPreproc(fn=lambda x: x / 10),
+        MNEPreproc(fn='resample', sfreq=sfreq),
+        NumpyPreproc(fn=lambda x: np.clip(x, -80, 80)),
+        NumpyPreproc(fn=lambda x: x / 3),
+        NumpyPreproc(fn=exponential_moving_demean, init_block_size=int(sfreq * 10), factor_new=1 / (sfreq * 5)),
+        # keep only EEG sensors
+        # NumpyPreproc(fn=exponential_moving_demean, init_block_size=sfreq*10, factor_new=1/(sfreq*5)),
+    ]
+
+    # Preprocess the data
+    preprocess(train_whole_set, preprocessors)
+    # Next, extract the 4-second trials from the dataset.
+    # Create windows using braindecode function for this. It needs parameters to define how
+    # trials should be used.
+    class_names = ['Right Hand', 'Rest']  # for later plotting
+    class_mapping = {'right_hand': 0, 'rest': 1}
+
+    windows_dataset = create_windows_from_events(
+        train_whole_set,
+        trial_start_offset_samples=0,
+        trial_stop_offset_samples=0,
+        preload=True,
+        mapping=class_mapping,
+    )
+    from torch.utils.data import Subset
+    n_split = int(np.round(0.75 * len(windows_dataset)))
+    valid_set = Subset(windows_dataset, range(n_split, len(windows_dataset)))
+    train_set = Subset(windows_dataset, range(0, n_split))
+    return train_set, valid_set
+
+def run_exp(
+        n_subjects,
+        lr,
+        weight_decay,
+        np_th_seed,
+        debug,
+        n_epochs,
+        n_virtual_chans,
+        hidden_channels,
+        n_blocks_up,
+        n_blocks_down,
+        n_mixes,
+        splitter_last,
+        init_perm_to_identity,
+        n_seconds,
+        output_dir,
+        dataset_name,
+        subject_id):
+    hparams = {k:v for k,v in locals().items() if v is not None}
+    sfreq = 32
+    kernel_length = 9
+    noise_factor = 5e-3
+    batch_size = 64
+    ids_to_load = None
+    if debug:
+        ids_to_load = list(range(60))
+        n_subjects = 10
+        batch_size = 10
+        n_epochs = 5
+        n_seconds = 12
+    set_random_seeds(np_th_seed, True)
+
+    writer = SummaryWriter(output_dir)
+    writer.add_hparams(hparams, metric_dict={}, name=output_dir)
+    writer.flush()
+
+    if dataset_name == 'tuh':
+        train_set, valid_set = load_train_valid_tuh(
+            n_subjects=n_subjects, n_seconds=n_seconds, ids_to_load=ids_to_load)
+    else:
+        assert dataset_name == 'hgd'
+        train_set, valid_set =  load_train_test_hgd(subject_id=subject_id)
 
     train_loader = th.utils.data.DataLoader(
         train_set,
@@ -225,9 +260,11 @@ def run_exp(
                     writer.add_scalar(f"{name.lower()}_nll", nll, i_epoch)
                     writer.add_scalar(f"{name.lower()}_acc", acc * 100, i_epoch)
             writer.flush()
+            sys.stdout.flush()
             if not debug:
                 dict_path = os.path.join(output_dir, "model_dict.th")
                 th.save(net.state_dict(), open(dict_path, 'wb'))
                 model_path = os.path.join(output_dir, "model.th")
                 th.save(net, open(model_path, 'wb'))
+
     return results
