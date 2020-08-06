@@ -49,7 +49,13 @@ def get_grid_param_list():
     optim_params = dictlistprod({
         'lr': [5e-4],
         'weight_decay': [5e-5],
-        'cross_ent_weight': [10,100,1000],
+        'cross_ent_weight': [0,],#1,10,100,1000
+        'scale_2_cross_ent': [False, True],
+        'mask_for_cross_ent': [False],
+        'nll_weight': [1],
+        'linear_classifier': [False],
+        'flow_gmm': [True],
+        'flow_coupling': ['affine'],
     })
     model_params = dictlistprod({
         'n_mixes': [32],
@@ -85,6 +91,12 @@ def run(
         debug,
         n_epochs,
         n_mixes,
+        scale_2_cross_ent,
+        mask_for_cross_ent,
+        nll_weight,
+        linear_classifier,
+        flow_gmm,
+flow_coupling,
 ):
     kwargs = locals()
     kwargs.pop('ex')
