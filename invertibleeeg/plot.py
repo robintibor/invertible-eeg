@@ -7,6 +7,7 @@ tuh_names = ['FP2', 'FP1', 'F4', 'F3', 'C4', 'C3', 'P4', 'P3', 'O2', 'O1', 'F8',
 hgd_names = ['Fp2', 'Fp1', 'F4', 'F3', 'C4', 'C3', 'P4', 'P3', 'O2', 'O1', 'F8',
 'F7', 'T8', 'T7', 'P8', 'P7','M2', 'M1', 'Fz', 'Cz', 'Pz']
 
+
 #https://www.google.com/imgres?imgurl=https%3A%2F%2Fupload.wikimedia.org%2Fwikipedia%2Fcommons%2Fthumb%2F7%2F70%2F21_electrodes_of_International_10-20_system_for_EEG.svg%2F1200px-21_electrodes_of_International_10-20_system_for_EEG.svg.png&imgrefurl=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2F10%25E2%2580%259320_system_(EEG)&tbnid=eF8gqawUiKx9TM&vet=12ahUKEwiY8ODK3bvqAhUGtaQKHWTuDhkQMygIegUIARC0AQ..i&docid=_l2v_nz1_IHQ1M&w=1200&h=1073&q=FP1%20FP2%20Cz%20EEG&client=firefox-b-d&ved=2ahUKEwiY8ODK3bvqAhUGtaQKHWTuDhkQMygIegUIARC0AQ
 tight_tuh_positions = [
     ['', '', 'FP1', '', 'FP2', '', ''],

@@ -142,7 +142,6 @@ def create_eeg_glow_up(n_chans, hidden_channels, kernel_length, splitter_first,
     n_c = Node(SelectNode(n_b_split, 0), block_c)
     n_c_out = n_c
     n_merged = CatAsListNode([n_a_out, n_b_out, n_c_out])
-    net = n_merged
     return n_merged
 
 

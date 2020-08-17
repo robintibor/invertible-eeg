@@ -108,17 +108,26 @@ def get_one_hot_encode(num_classes):
     return target_to_one_to_hot
 
 
-def get_CIFAR10(augment, dataroot, download, first_n):
+def get_CIFAR10(augment, dataroot, download, first_n, reflect_pad, grey):
     image_shape = (32, 32, 3)
     num_classes = 10
 
-    test_transform = transforms.Compose([transforms.ToTensor(), preprocess])
+    test_transformations = []
+    if grey:
+        test_transformations.append(transforms.Grayscale(num_output_channels=1))
+    test_transformations.extend([transforms.ToTensor(), preprocess])
+    test_transform = transforms.Compose(test_transformations)
     if augment:
-        transformations = [
-            transforms.RandomAffine(0, translate=(0.1, 0.1)),
-                           transforms.RandomHorizontalFlip()]
+        if reflect_pad:
+            transformations = [transforms.RandomCrop(size=32, padding=3, padding_mode='reflect')]
+        else:
+            transformations = [transforms.RandomAffine(0, translate=(0.1, 0.1)),]
+        transformations.append(transforms.RandomHorizontalFlip())
     else:
         transformations = []
+    if grey:
+        transformations.append(transforms.Grayscale(num_output_channels=1))
+
 
     transformations.extend([transforms.ToTensor(), preprocess])
 
@@ -144,15 +153,18 @@ def get_CIFAR10(augment, dataroot, download, first_n):
     return image_shape, num_classes, train_dataset, test_dataset
 
 
-def get_CIFAR100(augment, dataroot, download, first_n):
+def get_CIFAR100(augment, dataroot, download, first_n, reflect_pad):
     image_shape = (32, 32, 3)
     num_classes = 100
 
     test_transform = transforms.Compose([transforms.ToTensor(), preprocess])
 
     if augment:
-        transformations = [transforms.RandomAffine(0, translate=(0.1, 0.1)),
-                           transforms.RandomHorizontalFlip()]
+        if reflect_pad:
+            transformations = [transforms.RandomCrop(size=32, padding=3, padding_mode='reflect')]
+        else:
+            transformations = [transforms.RandomAffine(0, translate=(0.1, 0.1)),]
+        transformations.append(transforms.RandomHorizontalFlip())
     else:
         transformations = []
 
@@ -182,12 +194,15 @@ def get_CIFAR100(augment, dataroot, download, first_n):
     return image_shape, num_classes, train_dataset, test_dataset
 
 
-def get_SVHN(augment, dataroot, download, first_n):
+def get_SVHN(augment, dataroot, download, first_n, reflect_pad):
     image_shape = (32, 32, 3)
     num_classes = 10
 
     if augment:
-        transformations = [transforms.RandomAffine(0, translate=(0.1, 0.1))]
+        if reflect_pad:
+            transformations = [transforms.RandomCrop(size=32, padding=3, padding_mode='reflect')]
+        else:
+            transformations = [transforms.RandomAffine(0, translate=(0.1, 0.1)),]
     else:
         transformations = []
 
@@ -253,8 +268,9 @@ def load_train_test_with_defaults(
         augment=True,
         exclude_cifar_from_tiny=False,
         shuffle_tiny_chunks=True,
-        tiny_grey=False,
-        resize_tiny=None):
+        grey=False,
+        resize_tiny=None,
+        reflect_pad=True):
     return load_train_test(
         dataset=dataset,
         shuffle_train=shuffle_train,
@@ -266,8 +282,9 @@ def load_train_test_with_defaults(
         augment=augment,
         exclude_cifar_from_tiny=exclude_cifar_from_tiny,
         shuffle_tiny_chunks=shuffle_tiny_chunks,
-        tiny_grey=tiny_grey,
+        grey=grey,
         resize_tiny=resize_tiny,
+        reflect_pad=reflect_pad,
         )
 
 
@@ -275,10 +292,11 @@ def load_train_test(dataset, shuffle_train, drop_last_train,
                     batch_size, eval_batch_size,
                     n_workers,
                     first_n, augment, exclude_cifar_from_tiny,
+                    reflect_pad,
                     dataroot=folder_locations.pytorch_data,
                     shuffle_tiny_chunks=True,
-                    tiny_grey=False,
-                    resize_tiny=None):
+                    grey=False,
+                    resize_tiny=None,):
     assert dataset in ['tiny', 'svhn', 'cifar10', 'cifar100',
                        'tinyimagenet', 'random_tiny', 'mnist',
                        'fashion-mnist',
@@ -293,8 +311,9 @@ def load_train_test(dataset, shuffle_train, drop_last_train,
             batch_size=batch_size, eval_batch_size=eval_batch_size,
             augment=augment, exclude_cifar=exclude_cifar_from_tiny,
             shuffle_chunks=shuffle_tiny_chunks,
-            tiny_grey=tiny_grey,
-            resize_tiny=resize_tiny,)
+            grey=grey,
+            resize_tiny=resize_tiny,
+            reflect_pad=reflect_pad)
     elif 'brats' in dataset:
         pattern = dataset.split('_')[1]
         return load_brats(
@@ -310,7 +329,9 @@ def load_train_test(dataset, shuffle_train, drop_last_train,
             first_n=first_n, shuffle_train=shuffle_train,
             drop_last_train=drop_last_train,
             batch_size=batch_size, eval_batch_size=eval_batch_size,
-            augment=augment, download=False, n_workers=n_workers)
+            augment=augment, download=False, n_workers=n_workers,
+            reflect_pad=reflect_pad,
+            grey=grey)
 
 
 def load_train_test_tiny(
@@ -401,28 +422,37 @@ def load_train_test_tiny(
     return train_loader, test_loader
 
 
-def check_dataset(dataset, dataroot, augment, download, first_n):
+def check_dataset(dataset, dataroot, augment, download, first_n, reflect_pad,
+                  grey):
     if dataset == 'cifar10':
-        cifar10 = get_CIFAR10(augment, dataroot, download, first_n=first_n)
+        cifar10 = get_CIFAR10(
+            augment, dataroot, download, first_n=first_n,
+            reflect_pad=reflect_pad,
+            grey=grey
+                              )
         input_size, num_classes, train_dataset, test_dataset = cifar10
     if dataset == 'cifar100':
-        cifar100 = get_CIFAR100(augment, dataroot, download, first_n=first_n)
+        cifar100 = get_CIFAR100(augment, dataroot, download, first_n=first_n,
+            reflect_pad=reflect_pad, grey=grey)
         input_size, num_classes, train_dataset, test_dataset = cifar100
     if dataset == 'svhn':
-        svhn = get_SVHN(augment, dataroot, download, first_n=first_n)
+        svhn = get_SVHN(augment, dataroot, download, first_n=first_n,
+            reflect_pad=reflect_pad, grey=grey)
         input_size, num_classes, train_dataset, test_dataset = svhn
     if dataset == 'mnist':
         mnist = get_MNIST(augment, dataroot, download, first_n=first_n,
-                         rescale_to_32=True)
+                         rescale_to_32=True,
+            reflect_pad=reflect_pad)
         input_size, num_classes, train_dataset, test_dataset = mnist
     if dataset == 'fashion-mnist':
         mnist = get_FASHION_MNIST(augment, dataroot, download, first_n=first_n,
-                         rescale_to_32=True)
+                         rescale_to_32=True,
+            reflect_pad=reflect_pad)
         input_size, num_classes, train_dataset, test_dataset = mnist
     return input_size, num_classes, train_dataset, test_dataset
 
 
-def get_MNIST(augment, dataroot, download, first_n, rescale_to_32):
+def get_MNIST(augment, dataroot, download, first_n, rescale_to_32, reflect_pad):
     image_shape = (28, 28, 1)
 
     if rescale_to_32:
@@ -512,8 +542,11 @@ def get_FASHION_MNIST(augment, dataroot, download, first_n, rescale_to_32):
 
 def load_train_test_as_glow(dataset, dataroot, augment, download, first_n,
                             batch_size, n_workers, eval_batch_size,
+                            reflect_pad, grey,
                             shuffle_train=True, drop_last_train=True):
-    ds = check_dataset(dataset, dataroot, augment, download, first_n=first_n)
+    ds = check_dataset(dataset, dataroot, augment, download, first_n=first_n,
+                       reflect_pad=reflect_pad, grey=grey,
+    )
     image_shape, num_classes, train_dataset, test_dataset = ds
     train_loader = th.utils.data.DataLoader(train_dataset, batch_size=batch_size,
                                    shuffle=shuffle_train, num_workers=n_workers,
@@ -566,7 +599,7 @@ class BRATS2018(th.utils.data.Dataset):
 
 def load_brats(first_n, batch_size, n_workers, eval_batch_size,
                pattern,
-               shuffle_train=True, drop_last_train=True):
+               shuffle_train=True, drop_last_train=True,):
     brats_folder = folder_locations.brats_data
     image_folder = os.path.join(brats_folder, 'jpgs/')
 
