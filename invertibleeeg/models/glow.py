@@ -85,7 +85,7 @@ def create_eeg_glow_no_dist(n_chans, hidden_channels, kernel_length):
     )
     block_b_out = InvertibleSequential(
         AmplitudePhase(),
-        Flatten2d(),
+        Flatten2d(),/
     )
     block_c_out = InvertibleSequential(
         AmplitudePhase(),

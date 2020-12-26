@@ -467,8 +467,12 @@ def get_MNIST(augment, dataroot, download, first_n, rescale_to_32, reflect_pad):
     # do like that to get list copy
     train_transformations = [] + common_transformations
     if augment:
-        train_transformations.append(
-            transforms.RandomAffine(0, translate=(0.1, 0.1)))
+        if reflect_pad:
+            train_transformations.append([
+                transforms.RandomCrop(size=image_shape[0], padding=3, padding_mode='reflect')])
+        else:
+            train_transformations.append([
+                transforms.RandomAffine(0, translate=(0.1, 0.1)),])
 
     train_transformations.extend([transforms.ToTensor(), preprocess])
     train_transform = transforms.Compose(train_transformations)
@@ -496,7 +500,8 @@ def get_MNIST(augment, dataroot, download, first_n, rescale_to_32, reflect_pad):
     return image_shape, num_classes, train_dataset, test_dataset
 
 
-def get_FASHION_MNIST(augment, dataroot, download, first_n, rescale_to_32):
+def get_FASHION_MNIST(augment, dataroot, download, first_n, rescale_to_32,
+                      reflect_pad):
     image_shape = (28, 28, 1)
 
     if rescale_to_32:
@@ -510,9 +515,15 @@ def get_FASHION_MNIST(augment, dataroot, download, first_n, rescale_to_32):
 
     # do like that to get list copy
     train_transformations = [] + common_transformations
+
+
     if augment:
-        train_transformations.append(
-            transforms.RandomAffine(0, translate=(0.1, 0.1)))
+        if reflect_pad:
+            train_transformations.append([
+                transforms.RandomCrop(size=image_shape[0], padding=3, padding_mode='reflect')])
+        else:
+            train_transformations.append([
+                transforms.RandomAffine(0, translate=(0.1, 0.1)),])
 
     train_transformations.extend([transforms.ToTensor(), preprocess])
     train_transform = transforms.Compose(train_transformations)
@@ -650,7 +661,6 @@ class CelebA(th.utils.data.Dataset):
             image = self.transform(image)
 
         return image, th.ones(1)
-
 
 
 def load_celeb_a(first_n, batch_size, n_workers, eval_batch_size,
