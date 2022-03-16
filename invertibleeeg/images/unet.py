@@ -27,7 +27,7 @@ class WrapResidualUnet(nn.Module):
         return out
 
 class WrapResidualIdentityUnet(nn.Module):
-    def __init__(self, unet, final_nonlin,):
+    def __init__(self, unet, final_nonlin=th.sigmoid,):
         super().__init__()
         self.unet = unet
         self.merge_weight = nn.Parameter(th.zeros(1))
