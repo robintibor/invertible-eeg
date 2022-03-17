@@ -13,7 +13,7 @@ from invertible.init import init_all_modules
 from invertible.util import weighted_sum
 from invertible.view_as import flatten_2d
 from invertibleeeg.datasets import load_train_valid_bcic_iv_2a
-from invertibleeeg.models.glow import create_eeg_glow
+from invertibleeeg.models.glow import create_eeg_glow, create_eeg_glow_multi_stage
 from skorch.utils import to_numpy
 from tensorboardX import SummaryWriter
 from tqdm.autonotebook import trange
@@ -101,23 +101,27 @@ def train_deep4(train_set, valid_set, n_epochs):
     ]
     return results_dict
 
+
 def add_virtual_chans(x, n_virtual_chans):
     virtual_x = th.zeros(x.shape[0], n_virtual_chans, *x.shape[2:], device=x.device)
     x_with_virtual = th.cat((x, virtual_x), dim=1)
     return x_with_virtual
 
-def train_glow(
-    net,
-    class_prob_masked,
-    nll_loss_factor,
-    noise_factor,
-    train_set,
-    valid_set,
-    n_epochs,
-    n_virtual_chans,
-    n_classes,
-):
 
+def train_glow(
+        net,
+        class_prob_masked,
+        nll_loss_factor,
+        noise_factor,
+        train_set,
+        valid_set,
+        n_epochs,
+        n_virtual_chans,
+        n_classes,
+        n_times,
+        np_th_seed,
+):
+    i_start_center_crop = 64 - n_times // 2
 
     n_real_chans = train_set[0][0].shape[0]
     n_chans = n_real_chans + n_virtual_chans
@@ -133,8 +137,8 @@ def train_glow(
         net,
         th.cat(
             [
-                add_virtual_chans(x[:, :, 32 : 32 + 64], n_virtual_chans)
-                + th.randn(x.shape[0], n_chans, 64,) * noise_factor
+                add_virtual_chans(x[:, :, i_start_center_crop: i_start_center_crop + n_times], n_virtual_chans)
+                + th.randn(x.shape[0], n_chans, n_times, ) * noise_factor
                 for x, y, i in islice(train_loader, 10)
             ],
             dim=0,
@@ -143,18 +147,17 @@ def train_glow(
 
     param_dicts = [dict(params=net.parameters(), lr=5e-4, weight_decay=5e-5)]
     if class_prob_masked:
-        alphas = th.zeros(n_chans * 64, device="cuda", requires_grad=True)
+        alphas = th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
         param_dicts.append(dict(params=[alphas], lr=5e-2))
 
     optim = th.optim.Adam(param_dicts)
 
-    np_th_seed = 1
     rng = np.random.RandomState(np_th_seed)
     for i_epoch in trange(n_epochs + 1):
         if i_epoch > 0:
             for X_th, y, _ in train_loader:
-                i_start_time = rng.randint(0, X_th.shape[2] - 64)
-                X_th = X_th[:, :, i_start_time : i_start_time + 64]
+                i_start_time = rng.randint(0, X_th.shape[2] - n_times + 1)
+                X_th = X_th[:, :, i_start_time: i_start_time + n_times]
                 X_th = add_virtual_chans(X_th, n_virtual_chans)
                 # noise added after
                 y_th = th.nn.functional.one_hot(y.type(th.int64), num_classes=n_classes).cuda()
@@ -179,7 +182,7 @@ def train_glow(
                 loss.backward()
                 optim.step()
                 optim.zero_grad()
-        if (i_epoch % max(n_epochs // 10,1) == 0) or (i_epoch == n_epochs):
+        if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
             print(i_epoch)
             results = {}
             for name, loader in (("train", train_loader), ("valid", valid_loader)):
@@ -188,8 +191,8 @@ def train_glow(
                 for X_th, y, _ in loader:
                     with th.no_grad():
                         X_th = X_th[
-                            :, :, X_th.shape[2] // 2 - 32 : X_th.shape[2] // 2 + 32
-                        ]
+                               :, :, i_start_center_crop: i_start_center_crop + n_times
+                               ]
                         X_th = add_virtual_chans(X_th, n_virtual_chans)
                         y_th = th.nn.functional.one_hot(
                             y.type(th.int64), num_classes=n_classes
@@ -221,8 +224,8 @@ def train_glow(
                         all_corrects.extend(corrects)
                 acc = np.mean(all_corrects)
                 nll = -(
-                    np.mean(all_lps)
-                    / (np.prod(X_th.shape[1:]) * np.log(2) * (n_real_chans / n_chans))
+                        np.mean(all_lps)
+                        / (np.prod(X_th.shape[1:]) * np.log(2) * (n_real_chans / n_chans))
                 )
                 results[f"{name}_acc"] = acc
                 results[f"{name}_nll"] = nll
@@ -243,6 +246,9 @@ def run_exp(
     train_deep4_instead,
     amp_phase_at_end,
     n_virtual_chans,
+    n_stages,
+    splitter_last,
+    n_times,
 ):
     hparams = {k: v for k, v in locals().items() if v is not None}
     writer = SummaryWriter(output_dir)
@@ -253,7 +259,6 @@ def run_exp(
     n_blocks_down = 2
     hidden_channels = 32
     n_mixes = 8
-    splitter_last = "haar"
     init_perm_to_identity = True
     kernel_length = 9
     affine_or_additive = "affine"
@@ -276,7 +281,7 @@ def run_exp(
         results = train_deep4(train_set, valid_set, n_epochs)
 
     else:
-        net = create_eeg_glow(
+        net = create_eeg_glow_multi_stage(
             n_chans=n_chans,
             hidden_channels=hidden_channels,
             kernel_length=kernel_length,
@@ -287,6 +292,8 @@ def run_exp(
             n_mixes=n_mixes,
             n_classes=n_classes,
             amp_phase_at_end=amp_phase_at_end,
+            n_stages=n_stages,
+            n_times=n_times,
         )
 
         if init_perm_to_identity:
@@ -305,6 +312,8 @@ def run_exp(
             n_epochs,
             n_virtual_chans,
             n_classes=n_classes,
+            np_th_seed=np_th_seed,
+            n_times=n_times,
         )
 
     writer.close()

@@ -67,7 +67,10 @@ def get_grid_param_list():
 
     model_params = dictlistprod({
         "amp_phase_at_end": [False],
-        "n_virtual_chans": [2,4,8,16],
+        "n_virtual_chans": [0,2],
+        "n_stages": [4],
+        "splitter_last": [None],
+        "n_times": [64],
     })
 
     grid_params = product_of_list_of_lists_of_dicts(
@@ -101,6 +104,9 @@ def run(
     train_deep4_instead,
     amp_phase_at_end,
     n_virtual_chans,
+    n_stages,
+    splitter_last,
+    n_times,
 ):
     if debug:
         n_epochs = 3

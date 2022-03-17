@@ -95,6 +95,14 @@ def dense_flow_block(n_chans, hidden_channels, affine_or_additive):
     )
 
 
+def get_splitter(splitter_name, chunk_chans_first):
+    if splitter_name == "haar":
+        return Haar1dWavelet(chunk_chans_first=False)
+    else:
+        assert splitter_name == "subsample"
+        return SubsampleSplitter((2,), chunk_chans_first=chunk_chans_first)
+
+
 def create_eeg_glow(
     n_chans,
     hidden_channels,
@@ -108,13 +116,6 @@ def create_eeg_glow(
     amp_phase_at_end,
     n_times,
 ):
-    def get_splitter(splitter_name, chunk_chans_first):
-        if splitter_name == "haar":
-            return Haar1dWavelet(chunk_chans_first=False)
-        else:
-            assert splitter_name == "subsample"
-            return SubsampleSplitter((2,), chunk_chans_first=chunk_chans_first)
-
     block_a = InvertibleSequential(
         get_splitter(splitter_first, chunk_chans_first=False),
         *[
@@ -148,7 +149,7 @@ def create_eeg_glow(
         Flatten2d(),
         *[
             dense_flow_block(
-                n_chans * 64 // 4,
+                n_chans * n_times // 4,
                 hidden_channels=hidden_channels,
                 affine_or_additive=affine_or_additive,
             )
@@ -203,6 +204,102 @@ def create_eeg_glow(
     )
     # architecture plan:
     n_dist = Node(n_merged, ApplyToList(dist0, dist1, dist2))
+    net = n_dist
+    return net
+
+
+def create_eeg_glow_multi_stage(
+    n_chans,
+    hidden_channels,
+    kernel_length,
+    splitter_first,
+    splitter_last,
+    n_blocks,
+    affine_or_additive,
+    n_mixes,
+    n_classes,
+    amp_phase_at_end,
+    n_times,
+    n_stages,
+):
+    blocks = []
+
+    for i_stage in range(n_stages - 1):
+        if splitter_last is not None:
+            n_conv_in_chans = n_chans * int(2 ** (i_stage + 1))
+        else:
+            n_conv_in_chans = n_chans * 2
+
+        block = InvertibleSequential(
+            get_splitter(splitter_first, chunk_chans_first=False),
+            *[
+                conv_flow_block(
+                    n_chans=n_conv_in_chans,
+                    hidden_channels=hidden_channels,
+                    kernel_length=kernel_length,
+                    affine_or_additive=affine_or_additive,
+                )
+                for _ in range(n_blocks)
+            ],
+        )
+        if splitter_last is not None:
+            block.sequential.add_module('splitter_last', get_splitter(splitter_last, chunk_chans_first=True),)
+        blocks.append(block)
+
+    n_dense_in = n_chans * n_times // (2 ** (n_stages - 1))
+    end_block = InvertibleSequential(
+        get_splitter(splitter_first, chunk_chans_first=False),
+        Flatten2d(),
+        *[
+            dense_flow_block(
+                n_dense_in,
+                hidden_channels=hidden_channels,
+                affine_or_additive=affine_or_additive,
+            )
+            for _ in range(n_blocks)
+        ],
+    )
+    blocks.append(end_block)
+
+    node_flat_outs = []
+    n_cur = None
+    for i_stage in range(n_stages):
+        n_cur_block = Node(n_cur, blocks[i_stage])
+        if i_stage < n_stages - 1:
+            n_cur_split = Node(n_cur_block, ChunkChans(2))
+            n_cur_out = SelectNode(n_cur_split, 1)
+        else:
+            n_cur_out = n_cur_block
+        if amp_phase_at_end:
+            n_cur_out = Node(n_cur_out, AmplitudePhase())
+        n_cur_flat = Node(n_cur_out, Flatten2d())
+        node_flat_outs.append(n_cur_flat)
+        if i_stage < n_stages - 1:
+            n_cur = SelectNode(n_cur_split, 0)
+
+    n_merged = CatAsListNode(node_flat_outs)
+
+    init_dist_std = 0.1
+
+    dists = []
+    for i_stage in range(n_stages):
+        n_dims = n_times * n_chans // 2 ** (i_stage + 1)
+        if i_stage == n_stages - 1:
+            # no dims  splitted off for last stage
+            n_dims = n_dims * 2
+
+        dist = PerDimWeightedMix(
+            n_classes,
+            n_mixes=n_mixes,
+            n_dims=n_dims,
+            optimize_mean=True,
+            optimize_std=True,
+            init_std=init_dist_std,
+        )
+        dists.append(dist)
+
+    # architecture plan:
+    n_dist = Node(n_merged, ApplyToList(*dists))
     net = n_dist
     return net
 
