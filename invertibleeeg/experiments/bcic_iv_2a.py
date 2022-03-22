@@ -120,6 +120,7 @@ def train_glow(
         n_classes,
         n_times,
         np_th_seed,
+        scheduler,
 ):
     i_start_center_crop = 64 - n_times // 2
 
@@ -143,6 +144,7 @@ def train_glow(
             ],
             dim=0,
         ).cuda(),
+        init_only_uninitialized=True,
     )
 
     param_dicts = [dict(params=net.parameters(), lr=5e-4, weight_decay=5e-5)]
@@ -151,6 +153,7 @@ def train_glow(
         param_dicts.append(dict(params=[alphas], lr=5e-2))
 
     optim = th.optim.Adam(param_dicts)
+    this_scheduler = scheduler(optim)
 
     rng = np.random.RandomState(np_th_seed)
     for i_epoch in trange(n_epochs + 1):
@@ -182,6 +185,7 @@ def train_glow(
                 loss.backward()
                 optim.step()
                 optim.zero_grad()
+                this_scheduler.step()
         if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
             print(i_epoch)
             results = {}

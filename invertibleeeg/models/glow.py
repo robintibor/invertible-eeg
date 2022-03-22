@@ -10,6 +10,8 @@ from invertible.coupling import CouplingLayer
 from invertible.distribution import NClassIndependentDist, PerDimWeightedMix
 from invertible.expression import Expression
 from invertible.graph import Node, SelectNode, CatAsListNode, ConditionalNode
+from invertible.identity import Identity
+from invertible.inverse import Inverse
 from invertible.lists import ApplyToList, ApplyToListNoLogdets
 from invertible.multi_in_out import MultipleInputOutput
 from invertible.permute import InvPermute
@@ -24,7 +26,7 @@ from ..wavelet import Haar1dWavelet
 import functools
 
 
-def conv_flow_block(n_chans, hidden_channels, kernel_length, affine_or_additive):
+def conv_flow_block_nas(n_chans, hidden_channels, kernel_length, affine_or_additive, scale_fn, permute=True):
     assert affine_or_additive in ["affine", "additive"]
     if affine_or_additive == "additive":
         CoefClass = AdditiveCoefs
@@ -34,6 +36,55 @@ def conv_flow_block(n_chans, hidden_channels, kernel_length, affine_or_additive)
         n_chans_out = n_chans
 
     assert kernel_length % 2 == 1
+    if permute:
+        permuter = InvPermute(n_chans, fixed=False, use_lu=True)
+    else:
+        permuter = Identity()
+
+    return InvertibleSequential(
+        ActNorm(
+            n_chans,
+            "exp",
+        ),
+        permuter,
+        CouplingLayer(
+            ChunkChansIn2(swap_dims=False),
+            CoefClass(
+                nn.Sequential(
+                    nn.Conv1d(
+                        n_chans // 2,
+                        hidden_channels,
+                        kernel_length,
+                        padding=kernel_length // 2,
+                    ),
+                    nn.ELU(),
+                    nn.Conv1d(
+                        hidden_channels,
+                        n_chans_out,
+                        kernel_length,
+                        padding=kernel_length // 2,
+                    ),
+                    MultiplyFactors(n_chans_out),
+                )
+            ),
+            AffineModifier(scale_fn, add_first=True, eps=0),
+        ),
+        Inverse(permuter, invert_logdet_sign=True),
+    )
+
+
+def conv_flow_block_old(n_chans, hidden_channels, kernel_length, affine_or_additive):
+    assert affine_or_additive in ["affine", "additive"]
+    if affine_or_additive == "additive":
+        CoefClass = AdditiveCoefs
+        n_chans_out = n_chans // 2
+    else:
+        CoefClass = functools.partial(AffineCoefs, splitter=EverySecondChan())
+        n_chans_out = n_chans
+
+
+    assert kernel_length % 2 == 1
+
     return InvertibleSequential(
         ActNorm(
             n_chans,
@@ -63,7 +114,6 @@ def conv_flow_block(n_chans, hidden_channels, kernel_length, affine_or_additive)
             AffineModifier("sigmoid", add_first=True, eps=0),
         ),
     )
-
 
 def dense_flow_block(n_chans, hidden_channels, affine_or_additive):
     assert affine_or_additive in ["affine", "additive"]
