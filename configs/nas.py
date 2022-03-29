@@ -55,6 +55,7 @@ def get_grid_param_list():
 
     random_params = dictlistprod(
         {
+            "seed_offset": [0],
         }
     )
 
@@ -88,7 +89,9 @@ def get_grid_param_list():
 
 
 def sample_config_params(rng, params):
-    params['np_th_seed'] = rng.randint(0, 2**32)
+    max_seed = 2**32
+    params['np_th_seed'] = (rng.randint(0, max_seed) + params['seed_offset']) % max_seed
+    params.pop('seed_offset')
     return params
 
 
