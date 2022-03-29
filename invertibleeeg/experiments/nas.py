@@ -142,6 +142,7 @@ def get_blocks():
                 CSH.CategoricalHyperparameter("permute", choices=[True, False]),
             ],
             "chans_after": lambda x: x,
+            "position": "any",
         },
         "splitter": {
             "func": ignore_n_chans(get_splitter),
@@ -154,13 +155,13 @@ def get_blocks():
                 ),
             ],
             "chans_after": lambda x: x * 2,
+            "position": "end",
         },
     }
     return blocks
 
 
-def init_model_encoding(amplitude_phase_at_end):
-    n_times = 64
+def init_model_encoding(amplitude_phase_at_end, n_times):
     n_classes = 4
     n_real_chans = 22
     init_dist_std = 0.1
@@ -220,13 +221,14 @@ def run_exp(
     n_epochs,
     amplitude_phase_at_end,
     all_subjects_in_each_fold,
+    n_times,
 ):
+    batch_size = 64
     class_prob_masked = True
     nll_loss_factor = 1e-4
     noise_factor = 5e-3
     start_time = time.time()
     n_virtual_chans = 0
-    n_times = 64
     n_real_chans = 22
     n_chans = n_real_chans + n_virtual_chans
 
@@ -281,7 +283,7 @@ def run_exp(
                         encoding["node"].cuda()
                         # Try a forward-backward to ensure model works
                         _, lp = encoding["node"](
-                            th.zeros(64, n_chans, n_times, device="cuda")
+                            th.zeros(batch_size, n_chans, n_times, device="cuda")
                         )
                         mean_lp = th.mean(lp)
                         mean_lp.backward()
@@ -295,7 +297,8 @@ def run_exp(
                         log.info("Model failed....")
                         pass
             else:
-                encoding = init_model_encoding(amplitude_phase_at_end)
+                encoding = init_model_encoding(
+                    amplitude_phase_at_end, n_times=n_times)
                 parent_folder = None
 
             # train it get result
@@ -317,8 +320,9 @@ def run_exp(
                 n_times=n_times,
                 np_th_seed=np_th_seed,
                 scheduler=functools.partial(
-                    th.optim.lr_scheduler.CosineAnnealingLR, T_max=len(train_set) // 64
+                    th.optim.lr_scheduler.CosineAnnealingLR, T_max=len(train_set) // batch_size
                 ),
+                batch_size=batch_size,
             )
             metrics = results
             for key, val in metrics.items():

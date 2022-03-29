@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-all-sub-each-fold-new-seeds/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-128-times/",
         }
     ]
 
@@ -49,6 +49,7 @@ def get_grid_param_list():
         {
             "subject_id": [None],
             "all_subjects_in_each_fold": [True],
+            "n_times": [128],
         }
     )
 
@@ -101,6 +102,7 @@ def run(
     n_epochs,
     amplitude_phase_at_end,
     all_subjects_in_each_fold,
+    n_times,
 ):
     if debug:
         n_population = 2

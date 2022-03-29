@@ -123,6 +123,7 @@ def train_glow(
         n_times,
         np_th_seed,
         scheduler,
+        batch_size,
 ):
     i_start_center_crop = 64 - n_times // 2
 
@@ -130,13 +131,13 @@ def train_glow(
     n_chans = n_real_chans + n_virtual_chans
 
     train_loader = th.utils.data.DataLoader(
-        train_set, batch_size=64, shuffle=True, num_workers=0, drop_last=True
+        train_set, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=True
     )
     valid_loader = th.utils.data.DataLoader(
-        valid_set, batch_size=64, shuffle=False, num_workers=0
+        valid_set, batch_size=batch_size, shuffle=False, num_workers=0
     )
     test_loader = th.utils.data.DataLoader(
-        test_set, batch_size=64, shuffle=False, num_workers=0
+        test_set, batch_size=batch_size, shuffle=False, num_workers=0
     )
 
 
