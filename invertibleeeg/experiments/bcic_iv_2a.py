@@ -5,6 +5,7 @@ from itertools import islice
 import numpy as np
 import torch
 import torch as th
+from torch import nn
 from braindecode.models import Deep4Net
 from braindecode.models import ShallowFBCSPNet
 from braindecode.util import set_random_seeds
@@ -115,6 +116,7 @@ def train_glow(
         noise_factor,
         train_set,
         valid_set,
+        test_set,
         n_epochs,
         n_virtual_chans,
         n_classes,
@@ -133,6 +135,10 @@ def train_glow(
     valid_loader = th.utils.data.DataLoader(
         valid_set, batch_size=64, shuffle=False, num_workers=0
     )
+    test_loader = th.utils.data.DataLoader(
+        test_set, batch_size=64, shuffle=False, num_workers=0
+    )
+
 
     init_all_modules(
         net,
@@ -147,13 +153,16 @@ def train_glow(
         init_only_uninitialized=True,
     )
 
-    param_dicts = [dict(params=net.parameters(), lr=5e-4, weight_decay=5e-5)]
-    if class_prob_masked:
-        alphas = th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
-        param_dicts.append(dict(params=[alphas], lr=5e-2))
+    if not class_prob_masked:
+        param_dicts = [dict(params=list(net.parameters()), lr=5e-4, weight_decay=5e-5)]
+    else:
+        param_dicts = [dict(params=[p for p in  net.parameters() if p is not net.alphas], lr=5e-4, weight_decay=5e-5)]
+        param_dicts.append(dict(params=[net.alphas], lr=5e-2))
 
     optim = th.optim.Adam(param_dicts)
     this_scheduler = scheduler(optim)
+
+
 
     rng = np.random.RandomState(np_th_seed)
     for i_epoch in trange(n_epochs + 1):
@@ -169,7 +178,7 @@ def train_glow(
                 z, lp_per_dim = net(noised.cuda(), fixed=dict(y=None, sum_dims=False))
                 lp = th.sum(lp_per_dim, dim=-1)
                 if class_prob_masked:
-                    mask = th.sigmoid(alphas)
+                    mask = th.sigmoid(net.alphas)
                     lp_for_c = th.sum(
                         mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
                     )
@@ -186,55 +195,55 @@ def train_glow(
                 optim.step()
                 optim.zero_grad()
                 this_scheduler.step()
-        if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
-            print(i_epoch)
-            results = {}
-            for name, loader in (("train", train_loader), ("valid", valid_loader)):
-                all_lps = []
-                all_corrects = []
-                for X_th, y, _ in loader:
-                    with th.no_grad():
-                        X_th = X_th[
-                               :, :, i_start_center_crop: i_start_center_crop + n_times
-                               ]
-                        X_th = add_virtual_chans(X_th, n_virtual_chans)
-                        y_th = th.nn.functional.one_hot(
-                            y.type(th.int64), num_classes=n_classes
-                        ).cuda()
-                        # First with noise to get nll for bpd,
-                        # then without noise for accuracy
-                        noise = th.randn_like(X_th) * noise_factor
-                        noised = X_th + noise
-                        noise_log_prob = get_gaussian_log_probs(
-                            th.zeros_like(X_th[0]).view(-1),
-                            th.log(th.zeros_like(X_th[0]) + noise_factor).view(-1),
-                            flatten_2d(noise),
-                        )
-                        z, lp = net(noised.cuda())
-                        lps = to_numpy(th.sum(lp * y_th, dim=1) - noise_log_prob.cuda())
-                        all_lps.extend(lps)
-                        z, lp_per_dim = net(
-                            X_th.cuda(), fixed=dict(y=None, sum_dims=False)
-                        )
-                        lp = th.sum(lp_per_dim, dim=-1)
-                        if class_prob_masked:
-                            mask = th.sigmoid(alphas)
-                            lp_for_c = th.sum(
-                                mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
-                            )
-                        else:
-                            lp_for_c = lp
-                        corrects = to_numpy(y.cuda() == lp_for_c.argmax(dim=1))
-                        all_corrects.extend(corrects)
-                acc = np.mean(all_corrects)
-                nll = -(
-                        np.mean(all_lps)
-                        / (np.prod(X_th.shape[1:]) * np.log(2) * (n_real_chans / n_chans))
+    #if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
+    print(i_epoch)
+    results = {}
+    for name, loader in (("train", train_loader), ("valid", valid_loader), ("test", test_loader)):
+        all_lps = []
+        all_corrects = []
+        for X_th, y, _ in loader:
+            with th.no_grad():
+                X_th = X_th[
+                       :, :, i_start_center_crop: i_start_center_crop + n_times
+                       ]
+                X_th = add_virtual_chans(X_th, n_virtual_chans)
+                y_th = th.nn.functional.one_hot(
+                    y.type(th.int64), num_classes=n_classes
+                ).cuda()
+                # First with noise to get nll for bpd,
+                # then without noise for accuracy
+                noise = th.randn_like(X_th) * noise_factor
+                noised = X_th + noise
+                noise_log_prob = get_gaussian_log_probs(
+                    th.zeros_like(X_th[0]).view(-1),
+                    th.log(th.zeros_like(X_th[0]) + noise_factor).view(-1),
+                    flatten_2d(noise),
                 )
-                results[f"{name}_acc"] = acc
-                results[f"{name}_nll"] = nll
-            for key, val in results.items():
-                print(f"{key:10s}: {val:.3f}")
+                z, lp = net(noised.cuda())
+                lps = to_numpy(th.sum(lp * y_th, dim=1) - noise_log_prob.cuda())
+                all_lps.extend(lps)
+                z, lp_per_dim = net(
+                    X_th.cuda(), fixed=dict(y=None, sum_dims=False)
+                )
+                lp = th.sum(lp_per_dim, dim=-1)
+                if class_prob_masked:
+                    mask = th.sigmoid(net.alphas)
+                    lp_for_c = th.sum(
+                        mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
+                    )
+                else:
+                    lp_for_c = lp
+                corrects = to_numpy(y.cuda() == lp_for_c.argmax(dim=1))
+                all_corrects.extend(corrects)
+        acc = np.mean(all_corrects)
+        nll = -(
+                np.mean(all_lps)
+                / (np.prod(X_th.shape[1:]) * np.log(2) * (n_real_chans / n_chans))
+        )
+        results[f"{name}_mis"] = 1-acc
+        results[f"{name}_nll"] = nll
+    for key, val in results.items():
+        print(f"{key:10s}: {val:.3f}")
     return results
 
 
