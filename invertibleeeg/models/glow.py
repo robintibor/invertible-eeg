@@ -26,7 +26,8 @@ from ..wavelet import Haar1dWavelet
 import functools
 
 
-def conv_flow_block_nas(n_chans, hidden_channels, kernel_length, affine_or_additive, scale_fn, permute=True):
+def conv_flow_block_nas(n_chans, hidden_channels, kernel_length, affine_or_additive, scale_fn, permute=True,
+                        dropout=0.0):
     assert affine_or_additive in ["affine", "additive"]
     if affine_or_additive == "additive":
         CoefClass = AdditiveCoefs
@@ -58,6 +59,7 @@ def conv_flow_block_nas(n_chans, hidden_channels, kernel_length, affine_or_addit
                         padding=kernel_length // 2,
                     ),
                     nn.ELU(),
+                    nn.Dropout(dropout),
                     nn.Conv1d(
                         hidden_channels,
                         n_chans_out,
@@ -169,7 +171,7 @@ def create_eeg_glow(
     block_a = InvertibleSequential(
         get_splitter(splitter_first, chunk_chans_first=False),
         *[
-            conv_flow_block(
+            conv_flow_block_old(
                 n_chans * 2,
                 hidden_channels=hidden_channels,
                 kernel_length=kernel_length,
@@ -183,7 +185,7 @@ def create_eeg_glow(
     block_b = InvertibleSequential(
         get_splitter(splitter_first, chunk_chans_first=False),
         *[
-            conv_flow_block(
+            conv_flow_block_old(
                 n_chans * 4,
                 hidden_channels=hidden_channels,
                 kernel_length=kernel_length,

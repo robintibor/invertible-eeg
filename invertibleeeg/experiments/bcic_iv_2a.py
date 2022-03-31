@@ -11,6 +11,7 @@ from braindecode.models import ShallowFBCSPNet
 from braindecode.util import set_random_seeds
 from invertible.gaussian import get_gaussian_log_probs
 from invertible.init import init_all_modules
+from invertible.optim import grads_all_finite
 from invertible.util import weighted_sum
 from invertible.view_as import flatten_2d
 from invertibleeeg.datasets import load_train_valid_bcic_iv_2a
@@ -124,7 +125,9 @@ def train_glow(
         np_th_seed,
         scheduler,
         batch_size,
+        start_lr,#=5e-4
 ):
+    net.train()
     i_start_center_crop = 64 - n_times // 2
 
     n_real_chans = train_set[0][0].shape[0]
@@ -155,7 +158,7 @@ def train_glow(
     )
 
     if not class_prob_masked:
-        param_dicts = [dict(params=list(net.parameters()), lr=5e-4, weight_decay=5e-5)]
+        param_dicts = [dict(params=list(net.parameters()), lr=start_lr, weight_decay=5e-5)]
     else:
         param_dicts = [dict(params=[p for p in  net.parameters() if p is not net.alphas], lr=5e-4, weight_decay=5e-5)]
         param_dicts.append(dict(params=[net.alphas], lr=5e-2))
@@ -166,38 +169,41 @@ def train_glow(
 
 
     rng = np.random.RandomState(np_th_seed)
-    for i_epoch in trange(n_epochs + 1):
-        if i_epoch > 0:
-            for X_th, y, _ in train_loader:
-                i_start_time = rng.randint(0, X_th.shape[2] - n_times + 1)
-                X_th = X_th[:, :, i_start_time: i_start_time + n_times]
-                X_th = add_virtual_chans(X_th, n_virtual_chans)
-                # noise added after
-                y_th = th.nn.functional.one_hot(y.type(th.int64), num_classes=n_classes).cuda()
-                noise = th.randn_like(X_th) * noise_factor
-                noised = X_th + noise
-                z, lp_per_dim = net(noised.cuda(), fixed=dict(y=None, sum_dims=False))
-                lp = th.sum(lp_per_dim, dim=-1)
-                if class_prob_masked:
-                    mask = th.sigmoid(net.alphas)
-                    lp_for_c = th.sum(
-                        mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
-                    )
-                else:
-                    lp_for_c = lp
-                cross_ent = th.nn.functional.cross_entropy(
-                    lp_for_c,
-                    y_th.argmax(dim=1),
+
+    for i_epoch in trange(n_epochs):
+        net.train()
+        for X_th, y, _ in train_loader:
+            i_start_time = rng.randint(0, X_th.shape[2] - n_times + 1)
+            X_th = X_th[:, :, i_start_time: i_start_time + n_times]
+            X_th = add_virtual_chans(X_th, n_virtual_chans)
+            # noise added after
+            y_th = th.nn.functional.one_hot(y.type(th.int64), num_classes=n_classes).cuda()
+            noise = th.randn_like(X_th) * noise_factor
+            noised = X_th + noise
+            z, lp_per_dim = net(noised.cuda(), fixed=dict(y=None, sum_dims=False))
+            lp = th.sum(lp_per_dim, dim=-1)
+            if class_prob_masked:
+                mask = th.sigmoid(net.alphas)
+                lp_for_c = th.sum(
+                    mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
                 )
-                nll = -th.mean(th.sum(lp * y_th, dim=1))
-                loss = weighted_sum(1, 1, cross_ent, nll_loss_factor, nll)
-                optim.zero_grad()
-                loss.backward()
+            else:
+                lp_for_c = lp
+            cross_ent = th.nn.functional.cross_entropy(
+                lp_for_c,
+                y_th.argmax(dim=1),
+            )
+            nll = -th.mean(th.sum(lp * y_th, dim=1))
+            loss = weighted_sum(1, 1, cross_ent, nll_loss_factor, nll)
+            optim.zero_grad()
+            loss.backward()
+            if grads_all_finite:
                 optim.step()
-                optim.zero_grad()
-                this_scheduler.step()
+            optim.zero_grad()
+            this_scheduler.step()
     #if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
     print(i_epoch)
+    net.eval()
     results = {}
     for name, loader in (("train", train_loader), ("valid", valid_loader), ("test", test_loader)):
         all_lps = []

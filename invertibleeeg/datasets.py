@@ -5,7 +5,6 @@ from braindecode.datautil.preprocess import preprocess, scale
 from braindecode.datautil.windowers import create_windows_from_events
 from torch.utils.data import Subset
 import numpy as np
-import torch as th
 
 
 def load_and_preproc_bcic_iv_2a(subject_id):
@@ -42,24 +41,31 @@ def create_window_dataset(preproced_set, class_names):
     return windows_dataset
 
 
-def split_bcic_iv_2a(windows_dataset, split_valid_off_train):
+def split_bcic_iv_2a(windows_dataset, split_valid_off_train, all_subjects_in_each_fold):
     train_whole_set = windows_dataset.split('session')['session_T']
+    eval_whole_set = windows_dataset.split('session')['session_E']
     if split_valid_off_train:
-        n_split = int(np.round(0.75 * len(train_whole_set)))
-        print("n split", n_split)
-        train_set = Subset(train_whole_set, range(0, n_split))
-        valid_set = Subset(train_whole_set, range(n_split, len(train_whole_set)))
+        if all_subjects_in_each_fold:
+            run_splitted = train_whole_set.split('run')
+            train_set = BaseConcatDataset([run_splitted[f'run_{i}'] for i in range(4)])
+            valid_set = BaseConcatDataset([run_splitted[f'run_{i}'] for i in range(4, 6)])
+        else:
+            n_split = int(np.round(0.75 * len(train_whole_set)))
+            print("n split", n_split)
+            train_set = Subset(train_whole_set, range(0, n_split))
+            valid_set = Subset(train_whole_set, range(n_split, len(train_whole_set)))
     else:
         train_set = train_whole_set
-        valid_set = windows_dataset.split('session')['session_E']
+        valid_set = eval_whole_set
 
     return train_set, valid_set
 
 
-def load_train_valid_bcic_iv_2a(subject_id, class_names, split_valid_off_train):
+def load_train_valid_bcic_iv_2a(subject_id, class_names, split_valid_off_train, all_subjects_in_each_fold):
     preproced_set = load_and_preproc_bcic_iv_2a(subject_id)
     windows_dataset = create_window_dataset(preproced_set, class_names)
-    train_set, valid_set = split_bcic_iv_2a(windows_dataset, split_valid_off_train)
+    train_set, valid_set = split_bcic_iv_2a(windows_dataset, split_valid_off_train,
+                                            all_subjects_in_each_fold=all_subjects_in_each_fold)
     return train_set, valid_set
 
 

@@ -41,8 +41,8 @@ def get_grid_param_list():
 
     train_params = dictlistprod(
         {
-            "n_epochs": [400],
-            "train_deep4_instead": [False],
+            "n_epochs": [800],
+            "train_deep4_instead": [True],
         }
     )
 
@@ -50,7 +50,7 @@ def get_grid_param_list():
         {
             "subject_id": range(1,10),
             "split_valid_off_train": [False],
-            "class_names": [('left_hand', 'right_hand', 'feet', 'tongue')]
+            "class_names": [('left_hand', 'right_hand', 'feet', 'tongue')],
         }
     )
 

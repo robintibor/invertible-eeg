@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-128-times/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-start-alive-pop/",
         }
     ]
 
@@ -41,7 +41,8 @@ def get_grid_param_list():
 
     train_params = dictlistprod(
         {
-            "n_epochs": [50],
+            "n_epochs": [3],
+            "start_lr": [1e-3],
         }
     )
 
@@ -68,8 +69,10 @@ def get_grid_param_list():
     })
 
     search_params = [{
-        'max_hours': 1,
-        'n_population': 15,
+        'max_hours': 0.75,
+        'n_start_population': 50,
+        'n_alive_population': 500,
+        "max_n_changes": 1,
     }]
 
     grid_params = product_of_list_of_lists_of_dicts(
@@ -100,16 +103,20 @@ def run(
     debug,
     np_th_seed,
     max_hours,
-    n_population,
+    n_start_population,
+    n_alive_population,
     subject_id,
     n_epochs,
     amplitude_phase_at_end,
     all_subjects_in_each_fold,
     n_times,
+    max_n_changes,
+    start_lr,
 ):
     if debug:
-        n_population = 2
-        n_epochs = 10
+        n_start_population = 2
+        n_alive_population = 2
+        n_epochs = 2
     kwargs = locals()
     kwargs.pop("ex")
     if not debug:
