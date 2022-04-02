@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-start-alive-pop/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-learned-weight-decay-lr/",
         }
     ]
 
@@ -71,7 +71,7 @@ def get_grid_param_list():
     search_params = [{
         'max_hours': 0.75,
         'n_start_population': 50,
-        'n_alive_population': 500,
+        'n_alive_population': 150,
         "max_n_changes": 1,
     }]
 

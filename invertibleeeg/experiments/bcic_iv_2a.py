@@ -126,6 +126,7 @@ def train_glow(
         scheduler,
         batch_size,
         start_lr,#=5e-4
+        optim_params_per_param,
 ):
     net.train()
     i_start_center_crop = 64 - n_times // 2
@@ -157,13 +158,16 @@ def train_glow(
         init_only_uninitialized=True,
     )
 
-    if not class_prob_masked:
-        param_dicts = [dict(params=list(net.parameters()), lr=start_lr, weight_decay=5e-5)]
-    else:
-        param_dicts = [dict(params=[p for p in  net.parameters() if p is not net.alphas], lr=5e-4, weight_decay=5e-5)]
-        param_dicts.append(dict(params=[net.alphas], lr=5e-2))
+    for n,p in net.named_parameters():
+        assert p in optim_params_per_param, f"Parameter {n} does not have optim params"
+    param_dicts = [dict(params=[p], **optim_params_per_param[p]) for p in net.parameters()]
+    #if not class_prob_masked:
+    #    param_dicts = [dict(params=list(net.parameters()), lr=start_lr, weight_decay=5e-5)]
+    #else:
+        #param_dicts = [dict(params=[p for p in  net.parameters() if p is not net.alphas], lr=5e-4, weight_decay=5e-5)]
+        #param_dicts.append(dict(params=[net.alphas], lr=5e-2))
 
-    optim = th.optim.Adam(param_dicts)
+    optim = th.optim.AdamW(param_dicts)
     this_scheduler = scheduler(optim)
 
 

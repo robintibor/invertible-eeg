@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 def copy_clean_encoding_dict(encoding):
     clean_encoding = {}
     for key, val in encoding.items():
-        if key != "node":
+        if key not in ["node", "optim_params_per_param"]:
             clean_encoding[key] = copy_clean_encoding_val(val)
     return clean_encoding
 
@@ -59,6 +59,26 @@ def copy_clean_encoding_val(val):
             type(val) in [str, np.str_, int, bool, float]
         ), f"Unexpected encoding value type: {type(val)} for value: {val}"
         return val
+
+
+def get_optim_choices():
+    return [
+        CSH.CategoricalHyperparameter(
+            "lr",
+            choices=[0,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2],
+        ),
+        CSH.CategoricalHyperparameter(
+            "weight_decay",
+            choices=[0,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2],
+        ),
+    ]
+
+
+def sample_optim_config_space(seed):
+    cs = CS.ConfigurationSpace(seed=seed)
+    cs.add_hyperparameters(get_optim_choices())
+    config = cs.sample_configuration()
+    return config.get_dictionary()
 
 
 def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_changes):
@@ -98,16 +118,21 @@ def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_change
         cs.add_hyperparameters(blocks[block_type]["params"])
         config = cs.sample_configuration()
         block = blocks[block_type]["func"](n_chans=n_cur_chans, **config)
+        # Now sample optim params
+        optim_params = sample_optim_config_space(seed=rng.randint(2 ** 32))
+        for p in block.parameters():
+            encoding["optim_params_per_param"][p] = optim_params
         cur_node = Node(prev_node, block, remove_prev_node_next=True)
         next_node.change_prev(
             cur_node, notify_prev_nodes=True, remove_prev_node_next=True
         )
+
         encoding["net"].insert(
             i_insert_before,
             dict(
                 key=block_type,
                 params=config.get_dictionary(),
-                optim_params=dict(lr=5e-4, weight_decay=5e-5),
+                optim_params=optim_params,
                 node=cur_node,
             ),
         )
@@ -325,10 +350,15 @@ def init_model_encoding(amplitude_phase_at_end, n_times):
     net = dist_node
 
     init_all_modules(net, None)
+    # Now also add optim params
+    net_encoding["optim_params_per_param"] = {}
+    for p in net.parameters():
+        net_encoding["optim_params_per_param"][p] = dict(lr=1e-3, weight_decay=5e-5)
     net = net.cuda()
     net.alphas = nn.Parameter(
         th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
     )
+    net_encoding["optim_params_per_param"][net.alphas] = dict(lr=5e2, weight_decay=5e-5)
     net_encoding["node"] = net
     return net_encoding
 
@@ -454,6 +484,7 @@ def run_exp(
                 ),
                 batch_size=batch_size,
                 start_lr=start_lr,
+                optim_params_per_param=encoding['optim_params_per_param']
             )
             metrics = results
             for key, val in metrics.items():
