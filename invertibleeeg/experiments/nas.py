@@ -90,17 +90,18 @@ def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_change
     for _ in range(n_changes):
         # Determine which blocks are possible, some are only possible at end
         assert all([blocks[k]["position"] in ["any", "end"] for k in blocks.keys()])
-        i_insert_before = rng.choice(len(encoding["net"]) + 1)
+        block_type = rng.choice(list(blocks.keys()), size=1)[0]
+        if blocks[block_type]["position"] == "any":
+            i_insert_before = rng.choice(len(encoding["net"]) + 1)
+        else:
+            assert blocks[block_type]["position"] == "end"
+            i_insert_before = len(encoding["net"])
+
         if i_insert_before == len(encoding["net"]):
             # we are at end of blocks
-            suitable_block_keys = list(blocks.keys())
             next_node = flat_node
         else:
-            suitable_block_keys = [
-                k for k in blocks.keys() if blocks[k]["position"] == "any"
-            ]
             next_node = encoding["net"][i_insert_before]["node"]
-
         if i_insert_before == 0:
             prev_node = None
         else:
@@ -113,7 +114,6 @@ def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_change
             n_cur_chans = blocks[encoding["net"][i_block]["key"]]["chans_after"](
                 n_cur_chans
             )
-        block_type = rng.choice(suitable_block_keys, size=1)[0]
         cs = CS.ConfigurationSpace(seed=rng.randint(2 ** 32))
         cs.add_hyperparameters(blocks[block_type]["params"])
         config = cs.sample_configuration()
@@ -408,6 +408,7 @@ def run_exp(
 
         @ex.main
         def wrap_run_exp():
+            start_time = time.time()
             csv_file = os.path.join(worker_folder, "population.csv")
             csv_lock_file = csv_file + ".lock"
             csv_file_lock = fasteners.InterProcessLock(csv_lock_file)
@@ -487,6 +488,8 @@ def run_exp(
                 optim_params_per_param=encoding['optim_params_per_param']
             )
             metrics = results
+            runtime = time.time() - start_time
+            results['runtime'] = runtime
             for key, val in metrics.items():
                 ex.info[key] = val
 
@@ -512,7 +515,7 @@ def run_exp(
             # afterwards lock global dataframe, add your id,
             # check if you are superior, if yes, add to active population/parents,
             # and remove another one
-            # then
+            # then']
             return results
 
         ex.add_config(config)

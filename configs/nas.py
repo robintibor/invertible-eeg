@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-learned-weight-decay-lr/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-first-select-block-type-large-pop/",
         }
     ]
 
@@ -69,9 +69,9 @@ def get_grid_param_list():
     })
 
     search_params = [{
-        'max_hours': 0.75,
+        'max_hours': 0.25,
         'n_start_population': 50,
-        'n_alive_population': 150,
+        'n_alive_population': 500,
         "max_n_changes": 1,
     }]
 
@@ -123,6 +123,8 @@ def run(
         log.setLevel("INFO")
     file_obs = ex.observers[0]
     output_dir = file_obs.dir
+    # todo: by default use full subfolder of current exp folder,
+    # and allow specifying the fodler if you want to run further
     worker_folder = os.path.join(*os.path.split(output_dir)[:-1], 'worker')
     if debug:
         worker_folder = os.path.join(*os.path.split(output_dir)[:-1], 'debug-worker')
