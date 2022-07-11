@@ -285,7 +285,7 @@ def create_eeg_glow_multi_stage(
         block = InvertibleSequential(
             get_splitter(splitter_first, chunk_chans_first=False),
             *[
-                conv_flow_block(
+                conv_flow_block_old(
                     n_chans=n_conv_in_chans,
                     hidden_channels=hidden_channels,
                     kernel_length=kernel_length,

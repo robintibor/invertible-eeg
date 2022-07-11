@@ -16,6 +16,13 @@ tight_tuh_positions = [
     ['', 'T5', 'P3', 'Pz', 'P4', 'T6', ''],
     ['', '', 'O1', '', 'O2', '', '']]
 
+tight_hgd_21_positions = [
+    ['', '', 'FP1', '', 'FP2', '', ''],
+    ['', 'F7', 'F3',  'FZ',  'F4', 'F8','',],
+    ['M1', 'T7', 'C3', 'CZ', 'C4', 'T8', 'M2'],
+    ['', 'P7', 'P3', 'Pz', 'P4', 'P8', ''],
+    ['', '', 'O1', '', 'O2', '', '']]
+
 
 def get_sensor_pos(sensor_name, sensor_map=tight_tuh_positions):
     sensor_pos = np.where(

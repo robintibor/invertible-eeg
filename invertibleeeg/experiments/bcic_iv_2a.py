@@ -125,7 +125,6 @@ def train_glow(
         np_th_seed,
         scheduler,
         batch_size,
-        start_lr,#=5e-4
         optim_params_per_param,
 ):
     net.train()

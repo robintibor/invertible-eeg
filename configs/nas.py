@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-nas-first-select-block-type-large-pop/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-simple-flow-square-no-split/",
         }
     ]
 
@@ -42,7 +42,7 @@ def get_grid_param_list():
     train_params = dictlistprod(
         {
             "n_epochs": [3],
-            "start_lr": [1e-3],
+            "fixed_lr": [1e-3],
         }
     )
 
@@ -69,12 +69,18 @@ def get_grid_param_list():
     })
 
     search_params = [{
-        'max_hours': 0.25,
+        'max_hours': 0.5,
         'n_start_population': 50,
-        'n_alive_population': 500,
+        'n_alive_population': 150,
         "max_n_changes": 1,
     }]
 
+    searchspace_params = dictlistprod(
+        {
+            "searchspace": ["simpleflow"],
+            "include_splitter": [False],
+        }
+    )
     grid_params = product_of_list_of_lists_of_dicts(
         [
             save_params,
@@ -85,6 +91,7 @@ def get_grid_param_list():
             optim_params,
             model_params,
             search_params,
+            searchspace_params,
         ]
     )
 
@@ -111,7 +118,9 @@ def run(
     all_subjects_in_each_fold,
     n_times,
     max_n_changes,
-    start_lr,
+    fixed_lr,
+    searchspace,
+    include_splitter,
 ):
     if debug:
         n_start_population = 2

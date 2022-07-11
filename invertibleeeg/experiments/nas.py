@@ -36,6 +36,8 @@ from invertible.actnorm import ActNorm
 from invertible.permute import InvPermute
 from invertible.coupling import CouplingLayer
 from invertible.split_merge import EverySecondChan
+from invertible.expression import Expression
+from functools import partial
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +83,7 @@ def sample_optim_config_space(seed):
     return config.get_dictionary()
 
 
-def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_changes):
+def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_changes, other_encoding, fixed_lr):
     encoding = deepcopy(encoding)
     model = encoding["node"]
     flat_node = model.prev[0]
@@ -89,10 +91,43 @@ def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_change
     final_blocks = []
     for _ in range(n_changes):
         # Determine which blocks are possible, some are only possible at end
-        assert all([blocks[k]["position"] in ["any", "end"] for k in blocks.keys()])
-        block_type = rng.choice(list(blocks.keys()), size=1)[0]
+        sample_choices = ["new"]
+        if len(encoding["net"]) > 0:
+            sample_choices.append("own")
+        if len(other_encoding["net"]) > 0:
+            sample_choices.append("other")
+        sample_method = rng.choice(sample_choices)
+        if sample_method == "new":
+            assert all([blocks[k]["position"] in ["any", "end"] for k in blocks.keys()])
+            block_type = rng.choice(list(blocks.keys()), size=1)[0]
+
+            cs = CS.ConfigurationSpace(seed=rng.randint(2 ** 32))
+            cs.add_hyperparameters(blocks[block_type]["params"])
+            block_params = cs.sample_configuration().get_dictionary()
+            # Now sample optim params
+            optim_params = sample_optim_config_space(seed=rng.randint(2 ** 32))
+            if fixed_lr is not None:
+                optim_params['lr'] = fixed_lr
+        elif sample_method == "own":
+            i_block_to_copy = rng.choice(len(encoding["net"]))
+            block_type = encoding["net"][i_block_to_copy]["key"]
+            optim_params = encoding["net"][i_block_to_copy]["optim_params"]
+            block_params = encoding["net"][i_block_to_copy]["params"]
+        elif sample_method == "other":
+            i_block_to_copy = rng.choice(len(other_encoding["net"]))
+            block_type = other_encoding["net"][i_block_to_copy]["key"]
+            optim_params = other_encoding["net"][i_block_to_copy]["optim_params"]
+            block_params = other_encoding["net"][i_block_to_copy]["params"]
+        else:
+            assert False
+
         if blocks[block_type]["position"] == "any":
-            i_insert_before = rng.choice(len(encoding["net"]) + 1)
+            if sample_method in ["new", "own",]:
+                i_insert_before = rng.choice(len(encoding["net"]) + 1)
+            else:
+                assert sample_method == 'other'
+                # map  position in other encoding to this encoding
+                i_insert_before = int(np.ceil((i_block_to_copy / len(other_encoding["net"])) * len(encoding["net"])))
         else:
             assert blocks[block_type]["position"] == "end"
             i_insert_before = len(encoding["net"])
@@ -114,12 +149,7 @@ def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_change
             n_cur_chans = blocks[encoding["net"][i_block]["key"]]["chans_after"](
                 n_cur_chans
             )
-        cs = CS.ConfigurationSpace(seed=rng.randint(2 ** 32))
-        cs.add_hyperparameters(blocks[block_type]["params"])
-        config = cs.sample_configuration()
-        block = blocks[block_type]["func"](n_chans=n_cur_chans, **config)
-        # Now sample optim params
-        optim_params = sample_optim_config_space(seed=rng.randint(2 ** 32))
+        block = blocks[block_type]["func"](n_chans=n_cur_chans, **block_params)
         for p in block.parameters():
             encoding["optim_params_per_param"][p] = optim_params
         cur_node = Node(prev_node, block, remove_prev_node_next=True)
@@ -131,7 +161,7 @@ def mutate_encoding_and_model(encoding, rng, blocks, n_start_chans, max_n_change
             i_insert_before,
             dict(
                 key=block_type,
-                params=config.get_dictionary(),
+                params=block_params,
                 optim_params=optim_params,
                 node=cur_node,
             ),
@@ -174,7 +204,13 @@ def coupling_block(
     dropout=0.0,
     swap_dims=False,
     norm=None,
+    nonlin=None,
 ):
+    assert nonlin is not None
+    nonlin_layer = {
+        "square": Expression(th.square),
+        "elu": nn.ELU(),
+    }[nonlin]
     assert affine_or_additive in ["affine", "additive"]
     if affine_or_additive == "additive":
         CoefClass = AdditiveCoefs
@@ -202,7 +238,7 @@ def coupling_block(
                     kernel_length,
                     padding=kernel_length // 2,
                 ),
-                nn.ELU(),
+                nonlin_layer,
                 nn.Dropout(dropout),
                 norm_layer,
                 nn.Conv1d(
@@ -228,6 +264,67 @@ def act_norm(n_chans, scale_fn):
         n_chans,
         scale_fn,
     )
+
+def get_simpleflow_blocks(include_splitter):
+    blocks = {
+        "coupling_block": {
+            "func": coupling_block,
+            "params": [
+                CSH.CategoricalHyperparameter(
+                    "affine_or_additive",
+                    choices=["additive"],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "hidden_channels",
+                    choices=[8, 16, 32, 64, 128, 256],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "kernel_length",
+                    choices=[3, 5, 7, 9, 11, 13, 15],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "scale_fn", choices=["square"]
+                ),
+                CSH.CategoricalHyperparameter(
+                    "nonlin", choices=["square"]
+                ),
+                CSH.CategoricalHyperparameter("dropout", choices=[0,]),
+                CSH.CategoricalHyperparameter(
+                    "swap_dims",
+                    choices=[True, False],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "norm",
+                    choices=["none",],
+                ),
+            ],
+            "chans_after": lambda x: x,
+            "position": "any",
+        },
+        "permute": {
+            "func": inv_permute,
+            "params": [],
+            "chans_after": lambda x: x,
+            "position": "any",
+        },
+
+    }
+    if include_splitter:
+        blocks["splitter"] = {
+            "func": ignore_n_chans(get_splitter),
+            "params": [
+                CSH.CategoricalHyperparameter(
+                    "splitter_name", choices=["haar", "subsample"]
+                ),
+                CSH.CategoricalHyperparameter(
+                    "chunk_chans_first", choices=[True, False]
+                ),
+            ],
+            "chans_after": lambda x: x * 2,
+            "position": "end",
+        }
+
+    return blocks
 
 
 def get_blocks():
@@ -270,6 +367,9 @@ def get_blocks():
                 ),
                 CSH.CategoricalHyperparameter(
                     "scale_fn", choices=["twice_sigmoid", "exp"]
+                ),
+                CSH.CategoricalHyperparameter(
+                    "nonlin", choices=["elu"]
                 ),
                 CSH.CategoricalHyperparameter("dropout", choices=[0, 0.2, 0.5]),
                 CSH.CategoricalHyperparameter(
@@ -376,7 +476,9 @@ def run_exp(
     all_subjects_in_each_fold,
     n_times,
     max_n_changes,
-    start_lr,
+    fixed_lr,
+    searchspace,
+    include_splitter,
 ):
     batch_size = 64
     class_prob_masked = True
@@ -399,6 +501,9 @@ def run_exp(
         split_valid_off_train=split_valid_off_train,
         all_subjects_in_each_fold=all_subjects_in_each_fold,
     )
+
+    block_fn = dict(simpleflow=partial(get_simpleflow_blocks, include_splitter=include_splitter),
+                    default=get_blocks)[searchspace]
 
     rng = np.random.RandomState(np_th_seed)
     while (time.time() - start_time) < (max_hours * 3600):
@@ -429,6 +534,15 @@ def run_exp(
                 parent_encoding_filename = os.path.join(parent_folder, "encoding.pth")
                 parent_encoding = th.load(parent_encoding_filename)
 
+
+                other_parent = sorted_pop_df.iloc[
+                    rng.randint(0, min(len(population_df), n_alive_population))
+                ]
+                other_parent_folder = other_parent["folder"]
+                other_parent_encoding_filename = os.path.join(other_parent_folder, "encoding.pth")
+                other_parent_encoding = th.load(other_parent_encoding_filename)
+
+
                 model_worked = False
                 log.info("Mutating and trying model...")
                 while not model_worked:
@@ -436,9 +550,11 @@ def run_exp(
                         encoding = mutate_encoding_and_model(
                             parent_encoding,
                             rng,
-                            get_blocks(),
+                            block_fn(),
                             n_start_chans=n_chans,
                             max_n_changes=max_n_changes,
+                            other_encoding=other_parent_encoding,
+                            fixed_lr=fixed_lr,
                         )
                         encoding["node"].cuda()
                         # Try a forward-backward to ensure model works
@@ -454,8 +570,9 @@ def run_exp(
                             if p.grad is not None
                         ]
                         model_worked = True
+                        log.info("Model:\n" + str(encoding["node"]))
                     except RuntimeError:
-                        log.info("Model failed....")
+                        log.info("Model failed....:\n" + str(encoding["node"]))
                         pass
             else:
                 encoding = init_model_encoding(amplitude_phase_at_end, n_times=n_times)
@@ -484,7 +601,6 @@ def run_exp(
                     T_max=len(train_set) // batch_size,
                 ),
                 batch_size=batch_size,
-                start_lr=start_lr,
                 optim_params_per_param=encoding['optim_params_per_param']
             )
             metrics = results
