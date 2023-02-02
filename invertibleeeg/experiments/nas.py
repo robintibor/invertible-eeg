@@ -417,7 +417,9 @@ def get_blocks():
     return blocks
 
 
-def init_model_encoding(amplitude_phase_at_end, n_times):
+def init_model_encoding(
+        amplitude_phase_at_end, n_times, class_prob_masked,
+        alpha_lr):
     n_classes = 4
     n_real_chans = 22
     init_dist_std = 0.1
@@ -453,12 +455,15 @@ def init_model_encoding(amplitude_phase_at_end, n_times):
     # Now also add optim params
     net_encoding["optim_params_per_param"] = {}
     for p in net.parameters():
-        net_encoding["optim_params_per_param"][p] = dict(lr=1e-3, weight_decay=5e-5)
+        net_encoding["optim_params_per_param"][p] = dict(
+            lr=1e-3, weight_decay=5e-5)
     net = net.cuda()
-    net.alphas = nn.Parameter(
-        th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
-    )
-    net_encoding["optim_params_per_param"][net.alphas] = dict(lr=5e2, weight_decay=5e-5)
+    if class_prob_masked:
+        net.alphas = nn.Parameter(
+            th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
+        )
+        net_encoding["optim_params_per_param"][net.alphas] = dict(
+            lr=alpha_lr, weight_decay=5e-5)
     net_encoding["node"] = net
     return net_encoding
 
@@ -479,19 +484,25 @@ def run_exp(
     fixed_lr,
     searchspace,
     include_splitter,
+    class_names,
+    fixed_batch_size,
+    class_prob_masked,
+    nll_loss_factor,
+    search_by,
+    alpha_lr,
 ):
     batch_size = 64
-    class_prob_masked = True
-    nll_loss_factor = 1e-4
     noise_factor = 5e-3
     start_time = time.time()
     n_virtual_chans = 0
     n_real_chans = 22
     n_chans = n_real_chans + n_virtual_chans
 
+    sfreq = 32
+
     n_classes = 4
     split_valid_off_train = True
-    class_names = ["left_hand", "right_hand", "feet", "rest"]
+    # maybe specifiy via hparam to ensure you know of the change class_names = ["left_hand", "right_hand", "feet", "tongue"]
 
     set_random_seeds(np_th_seed, True)
     log.info("Load data...")
@@ -500,6 +511,7 @@ def run_exp(
         class_names,
         split_valid_off_train=split_valid_off_train,
         all_subjects_in_each_fold=all_subjects_in_each_fold,
+        sfreq=sfreq,
     )
 
     block_fn = dict(simpleflow=partial(get_simpleflow_blocks, include_splitter=include_splitter),
@@ -526,7 +538,7 @@ def run_exp(
             if population_df is not None and len(population_df) >= n_start_population:
                 # grab randomly one among top n_population
                 # change it, with chance of no change as well
-                sorted_pop_df = population_df.sort_values(by="valid_mis")
+                sorted_pop_df = population_df.sort_values(by=search_by)
                 this_parent = sorted_pop_df.iloc[
                     rng.randint(0, min(len(population_df), n_alive_population))
                 ]
@@ -545,6 +557,10 @@ def run_exp(
 
                 model_worked = False
                 log.info("Mutating and trying model...")
+                if fixed_batch_size is None:
+                    batch_size = 32
+                else:
+                    batch_size = fixed_batch_size
                 while not model_worked:
                     try:
                         encoding = mutate_encoding_and_model(
@@ -575,12 +591,37 @@ def run_exp(
                         log.info("Model failed....:\n" + str(encoding["node"]))
                         pass
             else:
-                encoding = init_model_encoding(amplitude_phase_at_end, n_times=n_times)
+                encoding = init_model_encoding(
+                    amplitude_phase_at_end, n_times=n_times,
+                    class_prob_masked=class_prob_masked,
+                    alpha_lr=alpha_lr)
                 parent_folder = None
+            # Now determine suitable batch_size
+            model_worked = False
+            if fixed_batch_size is None:
+                log.info("Determine max batch size...")
+                batch_size = 512
+                while not model_worked:
+                    try:
+                        # Try a forward-backward to ensure model works with batch size
+                        _, lp = encoding["node"](
+                            th.zeros(batch_size, n_chans, n_times, device="cuda")
+                        )
+                        mean_lp = th.mean(lp)
+                        mean_lp.backward()
+                        _ = [
+                            p.grad.zero_()
+                            for p in encoding["node"].parameters()
+                            if p.grad is not None
+                        ]
+                        model_worked = True
+                        log.info(f"Batch size: {batch_size}")
+                    except RuntimeError:
+                        log.info(f"Batch size {batch_size} failed.")
+                        batch_size = batch_size // 2
 
             # train it get result
             # (maybe also remember how often it was trained, history, or maybe just remember parent id  in df)
-
             log.info("Train model...")
             # result and encoding
             results = train_glow(
@@ -601,7 +642,8 @@ def run_exp(
                     T_max=len(train_set) // batch_size,
                 ),
                 batch_size=batch_size,
-                optim_params_per_param=encoding['optim_params_per_param']
+                optim_params_per_param=encoding['optim_params_per_param'],
+                with_tqdm=False,
             )
             metrics = results
             runtime = time.time() - start_time

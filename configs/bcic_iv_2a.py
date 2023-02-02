@@ -41,14 +41,14 @@ def get_grid_param_list():
 
     train_params = dictlistprod(
         {
-            "n_epochs": [800],
-            "train_deep4_instead": [True],
+            "n_epochs": [400],
+            "train_deep4_instead": [False],
         }
     )
 
     data_params = dictlistprod(
         {
-            "subject_id": range(1,10),
+            "subject_id": [None],#range(1,10),
             "split_valid_off_train": [False],
             "class_names": [('left_hand', 'right_hand', 'feet', 'tongue')],
         }
@@ -62,12 +62,12 @@ def get_grid_param_list():
 
 
     optim_params = dictlistprod({
-        "nll_loss_factor": [0]
+        "nll_loss_factor": [0, 1e-3]
     })
 
     model_params = dictlistprod({
         "amp_phase_at_end": [False],
-        "n_virtual_chans": [0,2],
+        "n_virtual_chans": [0],#[0,2],
         "n_stages": [4],
         "splitter_last": [None],
         "n_times": [64],
@@ -127,7 +127,7 @@ def run(
     )
     start_time = time.time()
     ex.info["finished"] = False
-    from invertibleeeg.experiments.bcic_iv_2a.run import run_exp
+    from invertibleeeg.experiments.bcic_iv_2a import run_exp
 
     results = run_exp(**kwargs)
     end_time = time.time()

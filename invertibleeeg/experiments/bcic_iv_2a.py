@@ -1,3 +1,4 @@
+import functools
 import logging
 from copy import deepcopy
 from itertools import islice
@@ -17,7 +18,7 @@ from invertible.view_as import flatten_2d
 from invertibleeeg.datasets import load_train_valid_bcic_iv_2a
 from invertibleeeg.models.glow import create_eeg_glow, create_eeg_glow_multi_stage
 from skorch.utils import to_numpy
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 from tqdm.autonotebook import trange
 
 log = logging.getLogger(__name__)
@@ -126,11 +127,18 @@ def train_glow(
         scheduler,
         batch_size,
         optim_params_per_param,
+        with_tqdm,
 ):
+    if not with_tqdm:
+        trange = range
+    else:
+        from tqdm.autonotebook import trange
+
     net.train()
-    i_start_center_crop = 64 - n_times // 2
 
     n_real_chans = train_set[0][0].shape[0]
+    n_input_times = train_set[0][0].shape[1]
+    i_start_center_crop = (n_input_times // 2) - (n_times // 2)
     n_chans = n_real_chans + n_virtual_chans
 
     train_loader = th.utils.data.DataLoader(
@@ -273,10 +281,10 @@ def run_exp(
     splitter_last,
     n_times,
 ):
-    hparams = {k: v for k, v in locals().items() if v is not None}
-    writer = SummaryWriter(output_dir)
-    writer.add_hparams(hparams, metric_dict={}, name=output_dir)
-    writer.flush()
+    #hparams = {k: v for k, v in locals().items() if v is not None}
+    #writer = SummaryWriter(output_dir)
+    #writer.add_hparams(hparams, metric_dict={}, name=output_dir)
+    #writer.flush()
 
     n_blocks_up = 2
     n_blocks_down = 2
@@ -294,7 +302,8 @@ def run_exp(
 
     set_random_seeds(np_th_seed, True)
     train_set, valid_set = load_train_valid_bcic_iv_2a(
-        subject_id, class_names, split_valid_off_train
+        subject_id, class_names, split_valid_off_train,
+        all_subjects_in_each_fold=True,
     )
 
 
@@ -325,19 +334,35 @@ def run_exp(
                     m.reset_to_identity()
         net = net.cuda()
 
+        batch_size = 64
+        optim_params_per_param = {
+            p: dict(lr=1e-3, weight_decay=5e-5) for p in net.parameters()}
+        if class_prob_masked:
+            net.alphas = nn.Parameter(
+                th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
+            )
+            optim_params_per_param[net.alphas] = dict(lr=5e2, weight_decay=5e-5)
+
         results = train_glow(
-            net,
-            class_prob_masked,
-            nll_loss_factor,
-            noise_factor,
-            train_set,
-            valid_set,
-            n_epochs,
-            n_virtual_chans,
+            net=net,
+            class_prob_masked=class_prob_masked,
+            nll_loss_factor=nll_loss_factor,
+            noise_factor=noise_factor,
+            train_set=train_set,
+            valid_set=valid_set,
+            test_set=valid_set,
+            n_epochs=n_epochs,
+            n_virtual_chans=n_virtual_chans,
             n_classes=n_classes,
             np_th_seed=np_th_seed,
             n_times=n_times,
+            scheduler=functools.partial(
+                th.optim.lr_scheduler.CosineAnnealingLR,
+                T_max=len(train_set) // batch_size,
+            ),
+            batch_size=batch_size,
+            optim_params_per_param=optim_params_per_param,
         )
 
-    writer.close()
+    #writer.close()
     return results

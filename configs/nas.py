@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-simple-flow-square-no-split/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-4-class-learned-lr/",
         }
     ]
 
@@ -41,8 +41,11 @@ def get_grid_param_list():
 
     train_params = dictlistprod(
         {
-            "n_epochs": [3],
-            "fixed_lr": [1e-3],
+            "n_epochs": [5],
+            "fixed_lr": [None],
+            "fixed_batch_size": [None],
+            "nll_loss_factor": [3e-2],
+            "alpha_lr": [1e-2],
         }
     )
 
@@ -51,6 +54,7 @@ def get_grid_param_list():
             "subject_id": [None],
             "all_subjects_in_each_fold": [True],
             "n_times": [128],
+            "class_names": [["left_hand", "right_hand", "feet","tongue"]],# "tongue"]],
         }
     )
 
@@ -66,18 +70,20 @@ def get_grid_param_list():
 
     model_params = dictlistprod({
         "amplitude_phase_at_end": [False],
+        "class_prob_masked": [True],
     })
 
     search_params = [{
-        'max_hours': 0.5,
+        'max_hours': 0.25,
         'n_start_population': 50,
         'n_alive_population': 150,
         "max_n_changes": 1,
+        "search_by": "valid_mis",
     }]
 
     searchspace_params = dictlistprod(
         {
-            "searchspace": ["simpleflow"],
+            "searchspace": ["default"],
             "include_splitter": [False],
         }
     )
@@ -121,6 +127,12 @@ def run(
     fixed_lr,
     searchspace,
     include_splitter,
+    class_names,
+    fixed_batch_size,
+    class_prob_masked,
+    nll_loss_factor,
+    search_by,
+    alpha_lr,
 ):
     if debug:
         n_start_population = 2
@@ -133,7 +145,7 @@ def run(
     file_obs = ex.observers[0]
     output_dir = file_obs.dir
     # todo: by default use full subfolder of current exp folder,
-    # and allow specifying the fodler if you want to run further
+    # and allow specifying the folder if you want to run further
     worker_folder = os.path.join(*os.path.split(output_dir)[:-1], 'worker')
     if debug:
         worker_folder = os.path.join(*os.path.split(output_dir)[:-1], 'debug-worker')
