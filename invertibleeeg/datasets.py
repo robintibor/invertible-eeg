@@ -29,7 +29,8 @@ def load_and_preproc_bcic_iv_2a(subject_id, sfreq):
     return dataset
 
 
-def create_window_dataset(preproced_set, class_names):
+def create_window_dataset(preproced_set, class_names,
+                          trial_start_offset_samples):
     # Next, extract the 4-second trials from the dataset.
     # Create windows using braindecode function for this. It needs parameters to define how
     # trials should be used.
@@ -43,7 +44,7 @@ def create_window_dataset(preproced_set, class_names):
 
     windows_dataset = create_windows_from_events(
         preproced_set,
-        trial_start_offset_samples=0,
+        trial_start_offset_samples=trial_start_offset_samples,
         trial_stop_offset_samples=0,
         preload=True,
         mapping=class_mapping,
@@ -76,10 +77,14 @@ def split_bcic_iv_2a(windows_dataset, split_valid_off_train, all_subjects_in_eac
 def load_train_valid_bcic_iv_2a(
     subject_id, class_names, split_valid_off_train, all_subjects_in_each_fold,
         sfreq,
+    trial_start_offset_sec,
         #sfreq 32 originally
 ):
     preproced_set = load_and_preproc_bcic_iv_2a(subject_id, sfreq)
-    windows_dataset = create_window_dataset(preproced_set, class_names)
+    trial_start_offset_samples = int(np.round(trial_start_offset_sec * sfreq))
+    windows_dataset = create_window_dataset(
+        preproced_set, class_names,
+        trial_start_offset_samples=trial_start_offset_samples)
     train_set, valid_set = split_bcic_iv_2a(
         windows_dataset,
         split_valid_off_train,
@@ -122,10 +127,13 @@ def split_bcic_iv_2a_train_valid_test(
 
 def load_train_valid_test_bcic_iv_2a(
     subject_id, class_names, split_valid_off_train, all_subjects_in_each_fold,
-        sfreq
+        sfreq, trial_start_offset_sec,
 ):
     preproced_set = load_and_preproc_bcic_iv_2a(subject_id, sfreq)
-    windows_dataset = create_window_dataset(preproced_set, class_names)
+    trial_start_offset_samples = int(np.round(trial_start_offset_sec * sfreq))
+    windows_dataset = create_window_dataset(
+        preproced_set, class_names,
+        trial_start_offset_samples=trial_start_offset_samples)
     train_set, valid_set, test_set = split_bcic_iv_2a_train_valid_test(
         windows_dataset, split_valid_off_train, all_subjects_in_each_fold
     )

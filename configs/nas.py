@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-4-class-learned-lr/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-8-n-changes/",
         }
     ]
 
@@ -41,11 +41,12 @@ def get_grid_param_list():
 
     train_params = dictlistprod(
         {
-            "n_epochs": [5],
+            "n_epochs": [20],
             "fixed_lr": [None],
             "fixed_batch_size": [None],
             "nll_loss_factor": [3e-2],
             "alpha_lr": [1e-2],
+            "cropped_model": [True],
         }
     )
 
@@ -55,6 +56,7 @@ def get_grid_param_list():
             "all_subjects_in_each_fold": [True],
             "n_times": [128],
             "class_names": [["left_hand", "right_hand", "feet","tongue"]],# "tongue"]],
+            "trial_start_offset_sec": [-0.5],
         }
     )
 
@@ -66,18 +68,20 @@ def get_grid_param_list():
 
 
     optim_params = dictlistprod({
+        "scheduler": ["cosine"],
     })
 
     model_params = dictlistprod({
         "amplitude_phase_at_end": [False],
         "class_prob_masked": [True],
+        "sample_dist_module": [True],
     })
 
     search_params = [{
         'max_hours': 0.25,
         'n_start_population': 50,
         'n_alive_population': 150,
-        "max_n_changes": 1,
+        "max_n_changes": 8,
         "search_by": "valid_mis",
     }]
 
@@ -133,6 +137,10 @@ def run(
     nll_loss_factor,
     search_by,
     alpha_lr,
+    sample_dist_module,
+    scheduler,
+    trial_start_offset_sec,
+    cropped_model,
 ):
     if debug:
         n_start_population = 2

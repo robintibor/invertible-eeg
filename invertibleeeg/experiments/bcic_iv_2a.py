@@ -73,7 +73,7 @@ def train_deep4(train_set, valid_set, n_epochs):
         model,
         criterion=torch.nn.NLLLoss,
         optimizer=torch.optim.AdamW,
-        train_split=predefined_split(train_set),
+        train_split=predefined_split(valid_set),
         optimizer__lr=lr,
         optimizer__weight_decay=weight_decay,
         batch_size=batch_size,
@@ -85,7 +85,7 @@ def train_deep4(train_set, valid_set, n_epochs):
     )
     # Model training for a specified number of epochs. `y` is None as it is already supplied
     # in the dataset.
-    clf.fit(valid_set, y=None, epochs=n_epochs)
+    clf.fit(train_set, y=None, epochs=n_epochs)
     results_dict = deepcopy(clf.history[-1])
     _ = [
         results_dict.pop(k)

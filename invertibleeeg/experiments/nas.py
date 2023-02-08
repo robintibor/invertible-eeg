@@ -20,7 +20,7 @@ from torch import nn
 from invertible.split_merge import ChunkChansIn2
 
 from invertible.amp_phase import AmplitudePhase
-from invertible.distribution import PerDimWeightedMix
+from invertible.distribution import PerDimWeightedMix, NClassIndependentDist
 from invertible.graph import Node
 from invertible.init import init_all_modules
 from invertible.inverse import Inverse
@@ -38,6 +38,8 @@ from invertible.coupling import CouplingLayer
 from invertible.split_merge import EverySecondChan
 from invertible.expression import Expression
 from functools import partial
+
+from ..models.cropped import CroppedGlow
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +69,7 @@ def get_optim_choices():
     return [
         CSH.CategoricalHyperparameter(
             "lr",
-            choices=[0,1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2],
+            choices=[1e-5,3e-5,1e-4,3e-4,1e-3,3e-3,1e-2],
         ),
         CSH.CategoricalHyperparameter(
             "weight_decay",
@@ -419,7 +421,7 @@ def get_blocks():
 
 def init_model_encoding(
         amplitude_phase_at_end, n_times, class_prob_masked,
-        alpha_lr):
+        alpha_lr, sample_dist_module, rng):
     n_classes = 4
     n_real_chans = 22
     init_dist_std = 0.1
@@ -432,14 +434,32 @@ def init_model_encoding(
     }
     n_dims = n_times * n_chans
 
-    dist = PerDimWeightedMix(
-        n_classes,
-        n_mixes=n_mixes,
-        n_dims=n_dims,
-        optimize_mean=True,
-        optimize_std=True,
-        init_std=init_dist_std,
-    )
+    if sample_dist_module:
+        if rng.rand() > 0.5:
+            dist = PerDimWeightedMix(
+                n_classes,
+                n_mixes=n_mixes,
+                n_dims=n_dims,
+                optimize_mean=True,
+                optimize_std=True,
+                init_std=init_dist_std,
+            )
+        else:
+            dist = NClassIndependentDist(
+                n_classes,
+                n_dims=n_dims,
+                optimize_mean=True,
+                optimize_std=True,
+            )
+    else:
+        dist = PerDimWeightedMix(
+            n_classes,
+            n_mixes=n_mixes,
+            n_dims=n_dims,
+            optimize_mean=True,
+            optimize_std=True,
+            init_std=init_dist_std,
+        )
 
     cur_node = None
 
@@ -490,6 +510,10 @@ def run_exp(
     nll_loss_factor,
     search_by,
     alpha_lr,
+    sample_dist_module,
+    scheduler,
+    trial_start_offset_sec,
+    cropped_model,
 ):
     batch_size = 64
     noise_factor = 5e-3
@@ -512,6 +536,7 @@ def run_exp(
         split_valid_off_train=split_valid_off_train,
         all_subjects_in_each_fold=all_subjects_in_each_fold,
         sfreq=sfreq,
+        trial_start_offset_sec=trial_start_offset_sec,
     )
 
     block_fn = dict(simpleflow=partial(get_simpleflow_blocks, include_splitter=include_splitter),
@@ -594,7 +619,9 @@ def run_exp(
                 encoding = init_model_encoding(
                     amplitude_phase_at_end, n_times=n_times,
                     class_prob_masked=class_prob_masked,
-                    alpha_lr=alpha_lr)
+                    alpha_lr=alpha_lr,
+                    sample_dist_module=sample_dist_module,
+                    rng=rng)
                 parent_folder = None
             # Now determine suitable batch_size
             model_worked = False
@@ -623,9 +650,13 @@ def run_exp(
             # train it get result
             # (maybe also remember how often it was trained, history, or maybe just remember parent id  in df)
             log.info("Train model...")
+            model_to_train = encoding["node"].cuda()
+            if cropped_model:
+                model_to_train = CroppedGlow(
+                    model_to_train, n_times=n_times)
             # result and encoding
             results = train_glow(
-                encoding["node"].cuda(),
+                model_to_train,
                 class_prob_masked,
                 nll_loss_factor,
                 noise_factor,
@@ -637,10 +668,14 @@ def run_exp(
                 n_classes=n_classes,
                 n_times=n_times,
                 np_th_seed=np_th_seed,
-                scheduler=functools.partial(
-                    th.optim.lr_scheduler.CosineAnnealingLR,
-                    T_max=len(train_set) // batch_size,
-                ),
+                scheduler= dict(
+                    identity=functools.partial(
+                        th.optim.lr_scheduler.LambdaLR,
+                        lr_lambda=lambda epoch: 1),
+                    cosine=functools.partial(
+                        th.optim.lr_scheduler.CosineAnnealingLR,
+                        T_max=len(train_set) // batch_size,)
+                )[scheduler],
                 batch_size=batch_size,
                 optim_params_per_param=encoding['optim_params_per_param'],
                 with_tqdm=False,
@@ -670,10 +705,6 @@ def run_exp(
             population_df.to_csv(csv_file, index_label="pop_id")
             csv_file_lock.release()
 
-            # afterwards lock global dataframe, add your id,
-            # check if you are superior, if yes, add to active population/parents,
-            # and remove another one
-            # then']
             return results
 
         ex.add_config(config)
