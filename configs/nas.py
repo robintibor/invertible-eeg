@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-8-n-changes/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-crop-128-from-144/",
         }
     ]
 
@@ -46,7 +46,7 @@ def get_grid_param_list():
             "fixed_batch_size": [None],
             "nll_loss_factor": [3e-2],
             "alpha_lr": [1e-2],
-            "cropped_model": [True],
+            "n_times_crop": [128],
         }
     )
 
@@ -54,7 +54,7 @@ def get_grid_param_list():
         {
             "subject_id": [None],
             "all_subjects_in_each_fold": [True],
-            "n_times": [128],
+            "n_times": [144],
             "class_names": [["left_hand", "right_hand", "feet","tongue"]],# "tongue"]],
             "trial_start_offset_sec": [-0.5],
         }
@@ -80,14 +80,14 @@ def get_grid_param_list():
     search_params = [{
         'max_hours': 0.25,
         'n_start_population': 50,
-        'n_alive_population': 150,
-        "max_n_changes": 8,
+        'n_alive_population': 300,
+        "max_n_changes": 3,
         "search_by": "valid_mis",
     }]
 
     searchspace_params = dictlistprod(
         {
-            "searchspace": ["default"],
+            "searchspace": ["downsample_anywhere"],
             "include_splitter": [False],
         }
     )
@@ -140,7 +140,7 @@ def run(
     sample_dist_module,
     scheduler,
     trial_start_offset_sec,
-    cropped_model,
+    n_times_crop,
 ):
     if debug:
         n_start_population = 2
