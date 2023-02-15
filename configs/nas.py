@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-crop-128-from-144/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-64-Hz/",
         }
     ]
 
@@ -41,12 +41,12 @@ def get_grid_param_list():
 
     train_params = dictlistprod(
         {
-            "n_epochs": [20],
+            "n_epochs": [3],  # [20],
             "fixed_lr": [None],
             "fixed_batch_size": [None],
-            "nll_loss_factor": [3e-2],
+            "nll_loss_factor": [3e-2],  # [0],#[3e-2],
             "alpha_lr": [1e-2],
-            "n_times_crop": [128],
+            "n_times_crop": [256],
         }
     )
 
@@ -54,9 +54,16 @@ def get_grid_param_list():
         {
             "subject_id": [None],
             "all_subjects_in_each_fold": [True],
-            "n_times": [144],
-            "class_names": [["left_hand", "right_hand", "feet","tongue"]],# "tongue"]],
+            "n_times": [288],
+            "sfreq": [64],
+            "class_names": [
+                ["left_hand", "right_hand", "feet", "tongue"]
+            ],  # "tongue"]],
             "trial_start_offset_sec": [-0.5],
+            "split_valid_off_train": [True],
+            "low_cut_hz": [None],
+            "high_cut_hz": [None],
+            "exponential_standardize": [False],
         }
     )
 
@@ -66,31 +73,46 @@ def get_grid_param_list():
         }
     )
 
+    optim_params = dictlistprod(
+        {
+            "scheduler": ["cosine"],
+        }
+    )
 
-    optim_params = dictlistprod({
-        "scheduler": ["cosine"],
-    })
+    model_params = dictlistprod(
+        {
+            "amplitude_phase_at_end": [False],
+            "class_prob_masked": [True],  # [True],
+            "sample_dist_module": [True],
+            "just_train_deep4": [False],
+            "n_virtual_chans": [0],
+            "linear_glow_clf": [False],
+            "splitter_name": ["subsample"],  # "haar"
+        }
+    )
 
-    model_params = dictlistprod({
-        "amplitude_phase_at_end": [False],
-        "class_prob_masked": [True],
-        "sample_dist_module": [True],
-    })
-
-    search_params = [{
-        'max_hours': 0.25,
-        'n_start_population': 50,
-        'n_alive_population': 300,
-        "max_n_changes": 3,
-        "search_by": "valid_mis",
-    }]
+    search_params = [
+        {
+            "max_hours": 0.25,
+            "n_start_population": 50,
+            "n_alive_population": 300,
+            "max_n_changes": 3,
+            "search_by": "valid_mis",
+        }
+    ]
 
     searchspace_params = dictlistprod(
         {
             "searchspace": ["downsample_anywhere"],
             "include_splitter": [False],
-        }
+            # "coupling_block", #"act_norm",
+            "included_blocks": [
+                ["coupling_block", "permute", "act_norm"],#"permute",deep4_coupling
+            ],
+            "limit_n_downsample": [None],
+        },
     )
+
     grid_params = product_of_list_of_lists_of_dicts(
         [
             save_params,
@@ -110,8 +132,8 @@ def get_grid_param_list():
 
 def sample_config_params(rng, params):
     max_seed = 2**32
-    params['np_th_seed'] = (rng.randint(0, max_seed) + params['seed_offset']) % max_seed
-    params.pop('seed_offset')
+    params["np_th_seed"] = (rng.randint(0, max_seed) + params["seed_offset"]) % max_seed
+    params.pop("seed_offset")
     return params
 
 
@@ -141,6 +163,17 @@ def run(
     scheduler,
     trial_start_offset_sec,
     n_times_crop,
+    just_train_deep4,
+    n_virtual_chans,
+    split_valid_off_train,
+    linear_glow_clf,
+    splitter_name,
+    low_cut_hz,
+    high_cut_hz,
+    exponential_standardize,
+    included_blocks,
+    limit_n_downsample,
+    sfreq,
 ):
     if debug:
         n_start_population = 2
@@ -154,10 +187,10 @@ def run(
     output_dir = file_obs.dir
     # todo: by default use full subfolder of current exp folder,
     # and allow specifying the folder if you want to run further
-    worker_folder = os.path.join(*os.path.split(output_dir)[:-1], 'worker')
+    worker_folder = os.path.join(*os.path.split(output_dir)[:-1], "worker")
     if debug:
-        worker_folder = os.path.join(*os.path.split(output_dir)[:-1], 'debug-worker')
-    kwargs['worker_folder'] = worker_folder
+        worker_folder = os.path.join(*os.path.split(output_dir)[:-1], "debug-worker")
+    kwargs["worker_folder"] = worker_folder
 
     th.backends.cudnn.benchmark = True
     import sys

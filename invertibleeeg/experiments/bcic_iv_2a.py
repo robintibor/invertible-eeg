@@ -133,7 +133,6 @@ def train_glow(
         trange = range
     else:
         from tqdm.autonotebook import trange
-
     net.train()
 
     n_real_chans = train_set[0][0].shape[0]
@@ -165,8 +164,13 @@ def train_glow(
         init_only_uninitialized=True,
     )
 
+
     for n,p in net.named_parameters():
         assert p in optim_params_per_param, f"Parameter {n} does not have optim params"
+    net_parameters = list(net.parameters())
+    for p in optim_params_per_param:
+        assert any([p is param for param in net_parameters]), (
+            "every optimized parameter should be a parameter of the network")
     param_dicts = [dict(params=[p], **optim_params_per_param[p]) for p in net.parameters()]
     #if not class_prob_masked:
     #    param_dicts = [dict(params=list(net.parameters()), lr=start_lr, weight_decay=5e-5)]

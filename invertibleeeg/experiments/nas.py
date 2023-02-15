@@ -40,6 +40,7 @@ from invertible.expression import Expression
 from functools import partial
 
 from ..models.cropped import CroppedGlow
+from ..models.glow_linear_clf import GlowLinearClassifier
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ log = logging.getLogger(__name__)
 def copy_clean_encoding_dict(encoding):
     clean_encoding = {}
     for key, val in encoding.items():
-        if key not in ["node", "optim_params_per_param"]:
+        if key not in ["node", "optim_params_per_param", "deep4", "linear_clf"]:
             clean_encoding[key] = copy_clean_encoding_val(val)
     return clean_encoding
 
@@ -94,6 +95,7 @@ def mutate_encoding_and_model(
     other_encoding,
     fixed_lr,
     max_n_downsample,
+    splitter_name,
 ):
     encoding = deepcopy(encoding)
     model = encoding["node"]
@@ -171,15 +173,19 @@ def mutate_encoding_and_model(
             n_cur_chans = blocks[encoding["net"][i_block]["key"]]["chans_after"](
                 n_cur_chans
             )
-        n_cur_chans = int(n_cur_chans * (2 ** n_downsample))
+        n_cur_chans = int(n_cur_chans * (2**n_downsample))
         block = blocks[block_type]["func"](n_chans=n_cur_chans, **block_params)
 
         # Add splitter for downsampling
         # invert logdet sign should not really matter
         splitter_seq = InvertibleSequential(
             *[
-                get_splitter(splitter_name="haar", chunk_chans_first=True)
-                for _ in range(n_downsample)
+                # do not chunk chans first for first downsampling
+                # otherwise network only sees half of EEG channels
+                get_splitter(
+                    splitter_name=splitter_name, chunk_chans_first=(i_downsample > 0)
+                )
+                for i_downsample in range(n_downsample)
             ]
         )
         block = InvertibleSequential(
@@ -292,6 +298,64 @@ def coupling_block(
     )
 
 
+def get_deep4_coef_net(n_chans, n_out_chans, dropout):
+    from braindecode.models import Deep4Net
+    from braindecode.models.util import to_dense_prediction_model
+
+    n_classes = n_out_chans
+    model = Deep4Net(
+        n_chans,
+        n_classes,
+        input_window_samples=None,
+        final_conv_length=2,
+        pool_time_stride=2,
+        pool_time_length=2,
+        filter_time_length=10,
+        filter_length_2=9,
+        filter_length_3=7,
+        filter_length_4=7,
+        drop_prob=dropout,
+    )
+    to_dense_prediction_model(model)
+    new_modules = []
+    for n, m in model.named_children():
+        if n == "softmax": continue
+        if hasattr(m, 'stride'):
+            dilation =  m.dilation[0]
+            kernel_size = m.kernel_size[0]
+            dilated_kernel_size = (kernel_size - 1) * dilation + 1
+            new_modules.append(nn.ReflectionPad2d((0,0,dilated_kernel_size - 1, 0)))
+        new_modules.append(m)
+    new_model = nn.Sequential(*new_modules)
+    return new_model
+
+
+def deep4_coupling_block(
+    n_chans,
+    affine_or_additive,
+    scale_fn,
+    dropout=0.0,
+    swap_dims=False,
+):
+    assert affine_or_additive in ["affine", "additive"]
+    if affine_or_additive == "additive":
+        CoefClass = AdditiveCoefs
+        n_chans_out = n_chans // 2
+    else:
+        CoefClass = functools.partial(AffineCoefs, splitter=EverySecondChan())
+        n_chans_out = n_chans
+    return CouplingLayer(
+        ChunkChansIn2(swap_dims=swap_dims),
+        CoefClass(
+            nn.Sequential(
+                get_deep4_coef_net(n_chans // 2, n_chans_out, dropout=dropout),
+                MultiplyFactors(n_chans_out),
+            )
+        ),
+        AffineModifier(scale_fn, add_first=True, eps=0),
+    )
+
+
 def inv_permute(n_chans):
     permuter = InvPermute(n_chans, fixed=False, use_lu=True, init_identity=True)
     return permuter
@@ -368,7 +432,7 @@ def get_simpleflow_blocks(include_splitter):
     return blocks
 
 
-def get_downsample_anywhere_blocks():
+def get_downsample_anywhere_blocks(included_blocks):
     blocks = {
         "coupling_block": {
             "func": coupling_block,
@@ -418,8 +482,30 @@ def get_downsample_anywhere_blocks():
             "chans_after": lambda x: x,
             "position": "any",
         },
+        "deep4_coupling": {
+            "func": deep4_coupling_block,
+            "params": [
+                CSH.CategoricalHyperparameter(
+                    "affine_or_additive",
+                    choices=["affine", "additive"],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "scale_fn", choices=["twice_sigmoid", "exp"]
+                ),
+                CSH.CategoricalHyperparameter("dropout", choices=[0, 0.2, 0.5]),
+                CSH.CategoricalHyperparameter(
+                    "swap_dims",
+                    choices=[True, False],
+                ),
+            ],
+            "chans_after": lambda x: x,
+            "position": "any",
+        }
     }
-    return blocks
+
+    wanted_blocks = {name: blocks[name] for name in included_blocks}
+
+    return wanted_blocks
 
 
 def get_blocks():
@@ -517,12 +603,14 @@ def init_model_encoding(
     alpha_lr,
     sample_dist_module,
     rng,
+    just_train_deep4,
+    n_virtual_chans,
+    linear_glow_clf,
 ):
     n_classes = 4
     n_real_chans = 22
     init_dist_std = 0.1
     n_mixes = 8
-    n_virtual_chans = 0
     n_chans = n_real_chans + n_virtual_chans
 
     net_encoding = {
@@ -581,6 +669,52 @@ def init_model_encoding(
             lr=alpha_lr, weight_decay=5e-5
         )
     net_encoding["node"] = net
+    if just_train_deep4:
+        from braindecode.models import Deep4Net
+        from braindecode.models.util import to_dense_prediction_model
+        from braindecode.models.util import get_output_shape
+        from invertibleeeg.models.wrap_as_gen import WrapClfAsGen
+
+        assert n_times == 128
+        input_window_samples = 144
+        n_chans = 22
+        n_classes = 4
+
+        model = Deep4Net(
+            n_chans,
+            n_classes,
+            input_window_samples=input_window_samples,
+            final_conv_length=2,
+            pool_time_stride=2,
+            pool_time_length=2,
+            filter_time_length=10,
+            filter_length_2=9,
+            filter_length_3=7,
+            filter_length_4=7,
+        )
+
+        to_dense_prediction_model(model)
+        assert get_output_shape(model, n_chans, input_window_samples)[2] == (
+            input_window_samples - 128
+        )
+
+        new_modules = []
+        for n, m in model.named_children():
+            if n == "softmax":
+                new_modules.append(nn.AdaptiveAvgPool2d(output_size=1))
+            new_modules.append(m)
+        new_model = nn.Sequential(*new_modules)
+        wrapped_model = WrapClfAsGen(new_model)
+        net_encoding["deep4"] = wrapped_model.cuda()
+    if linear_glow_clf:
+        linear = nn.Linear(n_chans, n_classes).cuda()
+        net_encoding["linear_clf"] = linear
+        net_encoding["optim_params_per_param"][linear.weight] = dict(
+            lr=1e-3, weight_decay=5e-5
+        )
+        net_encoding["optim_params_per_param"][linear.bias] = dict(
+            lr=1e-3, weight_decay=5e-5
+        )
     return net_encoding
 
 
@@ -610,18 +744,25 @@ def run_exp(
     scheduler,
     trial_start_offset_sec,
     n_times_crop,
+    just_train_deep4,
+    n_virtual_chans,
+    split_valid_off_train,
+    linear_glow_clf,
+    splitter_name,
+    low_cut_hz,
+    high_cut_hz,
+    exponential_standardize,
+    included_blocks,
+    limit_n_downsample,
+    sfreq,
 ):
     batch_size = 64
     noise_factor = 5e-3
     start_time = time.time()
-    n_virtual_chans = 0
     n_real_chans = 22
     n_chans = n_real_chans + n_virtual_chans
 
-    sfreq = 32
-
     n_classes = 4
-    split_valid_off_train = True
     # maybe specifiy via hparam to ensure you know of the change class_names = ["left_hand", "right_hand", "feet", "tongue"]
 
     set_random_seeds(np_th_seed, True)
@@ -633,13 +774,19 @@ def run_exp(
         all_subjects_in_each_fold=all_subjects_in_each_fold,
         sfreq=sfreq,
         trial_start_offset_sec=trial_start_offset_sec,
+        low_cut_hz=low_cut_hz,
+        high_cut_hz=high_cut_hz,
+        exponential_standardize=exponential_standardize,
     )
 
-    max_n_downsample = int(np.log2(n_times) - 2)
+    max_n_downsample = int(np.log2(n_times) - 3)
+    if limit_n_downsample is not None:
+        max_n_downsample = min(max_n_downsample, limit_n_downsample)
     block_fn = dict(
         simpleflow=partial(get_simpleflow_blocks, include_splitter=include_splitter),
         default=get_blocks,
-        downsample_anywhere=get_downsample_anywhere_blocks,
+        downsample_anywhere=partial(get_downsample_anywhere_blocks,
+            included_blocks=included_blocks),
     )[searchspace]
 
     rng = np.random.RandomState(np_th_seed)
@@ -697,10 +844,13 @@ def run_exp(
                             other_encoding=other_parent_encoding,
                             fixed_lr=fixed_lr,
                             max_n_downsample=max_n_downsample,
+                            splitter_name=splitter_name,
                         )
                         model_to_train = encoding["node"].cuda()
                         if n_times_crop is not None:
-                            model_to_train = CroppedGlow(model_to_train, n_times=n_times_crop)
+                            model_to_train = CroppedGlow(
+                                model_to_train, n_times=n_times_crop
+                            )
                         # Try a forward-backward to ensure model works
                         # Also here you should check function is unperturbed!!
                         _, lp = model_to_train(
@@ -726,6 +876,9 @@ def run_exp(
                     alpha_lr=alpha_lr,
                     sample_dist_module=sample_dist_module,
                     rng=rng,
+                    just_train_deep4=just_train_deep4,
+                    n_virtual_chans=n_virtual_chans,
+                    linear_glow_clf=linear_glow_clf,
                 )
                 model_to_train = encoding["node"].cuda()
                 if n_times_crop is not None:
@@ -753,14 +906,44 @@ def run_exp(
                         log.info(f"Batch size: {batch_size}")
                     except RuntimeError as e:
                         log.info(f"Batch size {batch_size} failed.")
+
+                        # clear gpu memory by forwarding minimal batch
+                        mean_lp = None
+                        lp = None
+                        import gc
+                        gc.collect()
+                        th.cuda.empty_cache()
+
+                        _, lp = model_to_train(
+                            th.zeros(1, n_chans, n_times, device="cuda")
+                        )
+                        mean_lp = th.mean(lp)
+                        mean_lp.backward()
                         batch_size = batch_size // 2
                         print(e)
-                        if batch_size == 0:
+                        if batch_size == 1:
                             raise e
+                # still divide batch size by half to esnure some buffer
+                batch_size = batch_size // 2
+            else:
+                batch_size = fixed_batch_size
 
             # train it get result
             # (maybe also remember how often it was trained, history, or maybe just remember parent id  in df)
             log.info("Train model...")
+            if just_train_deep4:
+                model_to_train = encoding["deep4"]
+                optim_params_per_param = {}
+                for p in model_to_train.parameters():
+                    optim_params_per_param[p] = dict(
+                        lr=1 * 0.01, weight_decay=0.5 * 0.001
+                    )
+            else:
+                optim_params_per_param = encoding["optim_params_per_param"]
+            if linear_glow_clf:
+                model_to_train = GlowLinearClassifier(
+                    model_to_train, encoding["linear_clf"], n_times=n_times_crop
+                ).cuda()
             # result and encoding
             results = train_glow(
                 model_to_train,
@@ -785,7 +968,7 @@ def run_exp(
                     ),
                 )[scheduler],
                 batch_size=batch_size,
-                optim_params_per_param=encoding["optim_params_per_param"],
+                optim_params_per_param=optim_params_per_param,
                 with_tqdm=False,
             )
             metrics = results

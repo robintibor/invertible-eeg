@@ -1,5 +1,6 @@
 from braindecode.datasets import BaseConcatDataset
 from braindecode.datasets.moabb import MOABBDataset
+from braindecode.preprocessing import exponential_moving_standardize
 from braindecode.preprocessing.preprocess import Preprocessor
 from braindecode.datautil.preprocess import preprocess, scale
 from braindecode.datautil.windowers import create_windows_from_events
@@ -7,7 +8,9 @@ from torch.utils.data import Subset
 import numpy as np
 
 
-def load_and_preproc_bcic_iv_2a(subject_id, sfreq):
+def load_and_preproc_bcic_iv_2a(
+    subject_id, sfreq, low_cut_hz, high_cut_hz, exponential_standardize
+):
     # using the moabb dataset to load our data
     if not (subject_id is None or hasattr(subject_id, "__len__")):
         subject_id = [subject_id]
@@ -19,18 +22,30 @@ def load_and_preproc_bcic_iv_2a(subject_id, sfreq):
             fn="set_eeg_reference",
             ref_channels="average",
         ),
+        Preprocessor(
+            "filter", l_freq=low_cut_hz, h_freq=high_cut_hz
+        ),  # Bandpass filter
         Preprocessor(fn="resample", sfreq=sfreq),
         Preprocessor(
             scale, factor=1e6 / 6, apply_on_array=True
         ),  # Convert from V to uV
     ]
+
+    if exponential_standardize:
+        factor_new = 1e-3 * (250 / sfreq)
+        init_block_size = int(1000 * (sfreq / 250))
+        preprocessors.append(Preprocessor(
+            exponential_moving_standardize,  # Exponential moving standardization
+            factor_new=factor_new,
+            init_block_size=init_block_size,
+            )
+        )
     # Preprocess the data
     preprocess(dataset, preprocessors)
     return dataset
 
 
-def create_window_dataset(preproced_set, class_names,
-                          trial_start_offset_samples):
+def create_window_dataset(preproced_set, class_names, trial_start_offset_samples):
     # Next, extract the 4-second trials from the dataset.
     # Create windows using braindecode function for this. It needs parameters to define how
     # trials should be used.
@@ -38,8 +53,9 @@ def create_window_dataset(preproced_set, class_names,
     for ds in preproced_set.datasets:
         unique_events = set(np.unique(ds.raw.annotations.description))
         existing_classes = existing_classes | unique_events
-    assert all([c in existing_classes for c in class_names]), (
-        f"These classes do not exist: {set(class_names) - existing_classes}")
+    assert all(
+        [c in existing_classes for c in class_names]
+    ), f"These classes do not exist: {set(class_names) - existing_classes}"
     class_mapping = {name: i_cls for i_cls, name in enumerate(class_names)}
 
     windows_dataset = create_windows_from_events(
@@ -75,16 +91,30 @@ def split_bcic_iv_2a(windows_dataset, split_valid_off_train, all_subjects_in_eac
 
 
 def load_train_valid_bcic_iv_2a(
-    subject_id, class_names, split_valid_off_train, all_subjects_in_each_fold,
-        sfreq,
+    subject_id,
+    class_names,
+    split_valid_off_train,
+    all_subjects_in_each_fold,
+    sfreq,
     trial_start_offset_sec,
-        #sfreq 32 originally
+    low_cut_hz,
+    high_cut_hz,
+    exponential_standardize
+    # sfreq 32 originally
 ):
-    preproced_set = load_and_preproc_bcic_iv_2a(subject_id, sfreq)
+    preproced_set = load_and_preproc_bcic_iv_2a(
+        subject_id,
+        sfreq,
+        low_cut_hz=low_cut_hz,
+        high_cut_hz=high_cut_hz,
+        exponential_standardize=exponential_standardize,
+    )
     trial_start_offset_samples = int(np.round(trial_start_offset_sec * sfreq))
     windows_dataset = create_window_dataset(
-        preproced_set, class_names,
-        trial_start_offset_samples=trial_start_offset_samples)
+        preproced_set,
+        class_names,
+        trial_start_offset_samples=trial_start_offset_samples,
+    )
     train_set, valid_set = split_bcic_iv_2a(
         windows_dataset,
         split_valid_off_train,
@@ -126,14 +156,29 @@ def split_bcic_iv_2a_train_valid_test(
 
 
 def load_train_valid_test_bcic_iv_2a(
-    subject_id, class_names, split_valid_off_train, all_subjects_in_each_fold,
-        sfreq, trial_start_offset_sec,
+    subject_id,
+    class_names,
+    split_valid_off_train,
+    all_subjects_in_each_fold,
+    sfreq,
+    trial_start_offset_sec,
+    low_cut_hz,
+    high_cut_hz,
+    exponential_standardize,
 ):
-    preproced_set = load_and_preproc_bcic_iv_2a(subject_id, sfreq)
+    preproced_set = load_and_preproc_bcic_iv_2a(
+        subject_id,
+        sfreq,
+        low_cut_hz=low_cut_hz,
+        high_cut_hz=high_cut_hz,
+        exponential_standardize=exponential_standardize,
+    )
     trial_start_offset_samples = int(np.round(trial_start_offset_sec * sfreq))
     windows_dataset = create_window_dataset(
-        preproced_set, class_names,
-        trial_start_offset_samples=trial_start_offset_samples)
+        preproced_set,
+        class_names,
+        trial_start_offset_samples=trial_start_offset_samples,
+    )
     train_set, valid_set, test_set = split_bcic_iv_2a_train_valid_test(
         windows_dataset, split_valid_off_train, all_subjects_in_each_fold
     )
