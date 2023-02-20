@@ -3,8 +3,9 @@ import logging
 import os.path
 import time
 from copy import deepcopy
+from functools import partial
 from functools import wraps
-import functools
+import traceback
 
 import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
@@ -17,30 +18,29 @@ from braindecode.util import set_random_seeds
 from hyperoptim.concurrent_file_observer import ConcurrentFileStorageObserver
 from sacred.experiment import Experiment
 from torch import nn
-from invertible.split_merge import ChunkChansIn2
 
+from invertible.actnorm import ActNorm
+from invertible.affine import AdditiveCoefs, AffineCoefs
+from invertible.affine import AffineModifier
 from invertible.amp_phase import AmplitudePhase
+from invertible.coupling import CouplingLayer
 from invertible.distribution import PerDimWeightedMix, NClassIndependentDist
+from invertible.expression import Expression
 from invertible.graph import Node
 from invertible.init import init_all_modules
 from invertible.inverse import Inverse
+from invertible.permute import InvPermute
 from invertible.sequential import InvertibleSequential
+from invertible.split_merge import ChunkChansIn2
+from invertible.split_merge import EverySecondChan
 from invertible.view_as import Flatten2d
 from invertibleeeg.datasets import load_train_valid_test_bcic_iv_2a
 from invertibleeeg.experiments.bcic_iv_2a import train_glow
-from invertibleeeg.models.glow import get_splitter, conv_flow_block_nas
-from invertible.affine import AdditiveCoefs, AffineCoefs
-from invertible.affine import AffineModifier
+from invertibleeeg.models.glow import get_splitter
 from ..factors import MultiplyFactors
-from invertible.actnorm import ActNorm
-from invertible.permute import InvPermute
-from invertible.coupling import CouplingLayer
-from invertible.split_merge import EverySecondChan
-from invertible.expression import Expression
-from functools import partial
-
 from ..models.cropped import CroppedGlow
 from ..models.glow_linear_clf import GlowLinearClassifier
+from ..scheduler import get_cosine_warmup_scheduler
 
 log = logging.getLogger(__name__)
 
@@ -96,8 +96,32 @@ def mutate_encoding_and_model(
     fixed_lr,
     max_n_downsample,
     splitter_name,
+    mutate_optim_params,
+    max_n_deletions,
 ):
     encoding = deepcopy(encoding)
+
+    if mutate_optim_params:
+        optim_lr_choices, optim_wd_choices = get_optim_choices()
+        assert optim_lr_choices.name == 'lr'
+        assert optim_wd_choices.name == 'weight_decay'
+        for p in encoding['optim_params_per_param']:
+            optim_params = encoding['optim_params_per_param'][p]
+            if fixed_lr is None:
+                lr_change = rng.randint(-1, 2)
+                new_lr_ind = np.searchsorted(sorted(optim_lr_choices.choices),
+                                             optim_params['lr']) + lr_change
+                new_lr_ind = max(0, min(new_lr_ind, len(optim_lr_choices.choices) - 1))
+                new_lr = sorted(optim_lr_choices.choices)[new_lr_ind]
+                optim_params['lr'] = new_lr
+
+            wd_change = rng.randint(-1, 2)
+            new_wd_ind = np.searchsorted(sorted(optim_wd_choices.choices),
+                                         optim_params['weight_decay']) + wd_change
+            new_wd_ind = max(0, min(new_wd_ind, len(optim_wd_choices.choices) - 1))
+            new_wd = sorted(optim_wd_choices.choices)[new_wd_ind]
+            optim_params['weight_decay'] = new_wd
+
     model = encoding["node"]
     flat_node = model.prev[0]
     n_changes = rng.randint(0, max_n_changes + 1)
@@ -213,9 +237,28 @@ def mutate_encoding_and_model(
             # invert logdet sign should not really matter
             final_blocks.insert(0, Inverse(block, invert_logdet_sign=True))
 
+
     flat_node.module.sequential = nn.Sequential(
         *(final_blocks + list(flat_node.module.sequential.children()))
     )
+
+    n_deletions = rng.randint(0, min(max_n_deletions, len(encoding["net"])) + 1)
+    for _ in range(n_deletions):
+        i_delete = rng.choice(len(encoding["net"]))
+        deleted_part = encoding["net"].pop(i_delete)
+        deleted_node = deleted_part["node"]
+        if i_delete > 0:
+            assert len(deleted_node.prev) == 1
+            prev_node = deleted_node.prev[0]
+        else:
+            prev_node = None
+        assert len(deleted_node.next) == 1
+        next_node = deleted_node.next[0]
+        next_node.change_prev(prev_node, notify_prev_nodes=True,
+                              remove_prev_node_next=True)
+        for p in deleted_node.module.parameters():
+            encoding["optim_params_per_param"].pop(p)
+
     init_all_modules(model, None)
     return encoding
 
@@ -249,6 +292,7 @@ def coupling_block(
     swap_dims=False,
     norm=None,
     nonlin=None,
+    multiply_by_zeros=True,
 ):
     assert nonlin is not None
     nonlin_layer = {
@@ -272,7 +316,20 @@ def coupling_block(
     else:
         raise ValueError(f"Unexpected norm {norm}")
 
-    return CouplingLayer(
+    last_conv = nn.Conv1d(
+                hidden_channels,
+                n_chans_out,
+                kernel_length,
+                padding=kernel_length // 2,
+            )
+    if multiply_by_zeros:
+        post_hoc_coefs = MultiplyFactors(n_chans_out)
+    else:
+        post_hoc_coefs = nn.Identity()
+        last_conv.weight.data.zero_()
+        last_conv.bias.data.zero_()
+
+    coupling_layer = CouplingLayer(
         ChunkChansIn2(swap_dims=swap_dims),
         CoefClass(
             nn.Sequential(
@@ -285,17 +342,13 @@ def coupling_block(
                 nonlin_layer,
                 nn.Dropout(dropout),
                 norm_layer,
-                nn.Conv1d(
-                    hidden_channels,
-                    n_chans_out,
-                    kernel_length,
-                    padding=kernel_length // 2,
-                ),
-                MultiplyFactors(n_chans_out),
+                last_conv,
+                post_hoc_coefs,
             )
         ),
         AffineModifier(scale_fn, add_first=True, eps=0),
     )
+    return coupling_layer
 
 
 def get_deep4_coef_net(n_chans, n_out_chans, dropout):
@@ -356,8 +409,8 @@ def deep4_coupling_block(
     )
 
 
-def inv_permute(n_chans):
-    permuter = InvPermute(n_chans, fixed=False, use_lu=True, init_identity=True)
+def inv_permute(n_chans, use_lu=True):
+    permuter = InvPermute(n_chans, fixed=False, use_lu=use_lu, init_identity=True)
     return permuter
 
 
@@ -462,13 +515,22 @@ def get_downsample_anywhere_blocks(included_blocks):
                     "norm",
                     choices=["none", "bnorm"],
                 ),
+                CSH.CategoricalHyperparameter(
+                    "multiply_by_zeros",
+                    choices=[True, False],
+                ),
             ],
             "chans_after": lambda x: x,
             "position": "any",
         },
         "permute": {
             "func": inv_permute,
-            "params": [],
+            "params": [
+                CSH.CategoricalHyperparameter(
+                    "use_lu",
+                    choices=[True, False],
+                ),
+            ],
             "chans_after": lambda x: x,
             "position": "any",
         },
@@ -509,6 +571,7 @@ def get_downsample_anywhere_blocks(included_blocks):
 
 
 def get_blocks():
+    assert False
     blocks = {
         # "conv_flow_block_nas": {
         #     "func": conv_flow_block_nas,
@@ -601,7 +664,7 @@ def init_model_encoding(
     n_times,
     class_prob_masked,
     alpha_lr,
-    sample_dist_module,
+    dist_module_choices,
     rng,
     just_train_deep4,
     n_virtual_chans,
@@ -618,32 +681,29 @@ def init_model_encoding(
     }
     n_dims = n_times * n_chans
 
-    if sample_dist_module:
-        if rng.rand() > 0.5:
-            dist = PerDimWeightedMix(
-                n_classes,
-                n_mixes=n_mixes,
-                n_dims=n_dims,
-                optimize_mean=True,
-                optimize_std=True,
-                init_std=init_dist_std,
-            )
-        else:
-            dist = NClassIndependentDist(
-                n_classes,
-                n_dims=n_dims,
-                optimize_mean=True,
-                optimize_std=True,
-            )
-    else:
-        dist = PerDimWeightedMix(
-            n_classes,
+    dist_module_options = {
+        "perdimweightedmix":
+        functools.partial(
+            PerDimWeightedMix,
+            n_classes=n_classes,
             n_mixes=n_mixes,
             n_dims=n_dims,
             optimize_mean=True,
             optimize_std=True,
             init_std=init_dist_std,
-        )
+        ),
+        "nclassindependent":
+        functools.partial(
+            NClassIndependentDist,
+            n_classes=n_classes,
+            n_dims=n_dims,
+            optimize_mean=True,
+            optimize_std=True,
+            )
+    }
+
+    wanted_dist_module = rng.choice(dist_module_choices)
+    dist = dist_module_options[wanted_dist_module]()
 
     cur_node = None
 
@@ -675,7 +735,7 @@ def init_model_encoding(
         from braindecode.models.util import get_output_shape
         from invertibleeeg.models.wrap_as_gen import WrapClfAsGen
 
-        assert n_times == 128
+        #assert n_times == 128
         input_window_samples = 144
         n_chans = 22
         n_classes = 4
@@ -718,6 +778,27 @@ def init_model_encoding(
     return net_encoding
 
 
+def try_run_backward(model_to_train, batch_size, n_chans, n_times):
+    _, lp = model_to_train(
+        th.zeros(batch_size, n_chans, n_times, device="cuda")
+    )
+    mean_lp = th.mean(lp)
+    mean_lp.backward()
+    _ = [
+        p.grad.zero_()
+        for p in model_to_train.parameters()
+        if p.grad is not None
+    ]
+
+
+def try_run_forward(model_to_train, batch_size, n_chans, n_times):
+    _, lp = model_to_train(
+        th.zeros(batch_size, n_chans, n_times, device="cuda")
+    )
+    mean_lp = th.mean(lp)
+    return mean_lp.detach().item()
+
+
 def run_exp(
     debug,
     np_th_seed,
@@ -729,7 +810,8 @@ def run_exp(
     n_epochs,
     amplitude_phase_at_end,
     all_subjects_in_each_fold,
-    n_times,
+    n_times_train,
+    n_times_eval,
     max_n_changes,
     fixed_lr,
     searchspace,
@@ -740,7 +822,7 @@ def run_exp(
     nll_loss_factor,
     search_by,
     alpha_lr,
-    sample_dist_module,
+    dist_module_choices,
     scheduler,
     trial_start_offset_sec,
     n_times_crop,
@@ -755,8 +837,11 @@ def run_exp(
     included_blocks,
     limit_n_downsample,
     sfreq,
+    mutate_optim_params,
+    max_n_deletions,
+    channel_drop_p,
+    n_eval_crops,
 ):
-    batch_size = 64
     noise_factor = 5e-3
     start_time = time.time()
     n_real_chans = 22
@@ -779,7 +864,7 @@ def run_exp(
         exponential_standardize=exponential_standardize,
     )
 
-    max_n_downsample = int(np.log2(n_times) - 3)
+    max_n_downsample = int(np.log2(n_times_crop or n_times_train) - 3)
     if limit_n_downsample is not None:
         max_n_downsample = min(max_n_downsample, limit_n_downsample)
     block_fn = dict(
@@ -845,36 +930,31 @@ def run_exp(
                             fixed_lr=fixed_lr,
                             max_n_downsample=max_n_downsample,
                             splitter_name=splitter_name,
+                            mutate_optim_params=mutate_optim_params,
+                            max_n_deletions=max_n_deletions,
                         )
                         model_to_train = encoding["node"].cuda()
                         if n_times_crop is not None:
                             model_to_train = CroppedGlow(
                                 model_to_train, n_times=n_times_crop
                             )
+
                         # Try a forward-backward to ensure model works
                         # Also here you should check function is unperturbed!!
-                        _, lp = model_to_train(
-                            th.zeros(batch_size, n_chans, n_times, device="cuda")
-                        )
-                        mean_lp = th.mean(lp)
-                        mean_lp.backward()
-                        _ = [
-                            p.grad.zero_()
-                            for p in model_to_train.parameters()
-                            if p.grad is not None
-                        ]
+                        try_run_backward(model_to_train, batch_size, n_chans, n_times_train)
+                        try_run_forward(model_to_train, batch_size, n_chans, n_times_eval)
                         model_worked = True
                         log.info("Model:\n" + str(model_to_train))
                     except RuntimeError as e:
                         log.info("Model failed....:\n" + str(model_to_train))
-                        print(e)
+                        traceback.print_exc()
             else:
                 encoding = init_model_encoding(
                     amplitude_phase_at_end,
-                    n_times=n_times_crop or n_times,
+                    n_times=n_times_crop or n_times_train,
                     class_prob_masked=class_prob_masked,
                     alpha_lr=alpha_lr,
-                    sample_dist_module=sample_dist_module,
+                    dist_module_choices=dist_module_choices,
                     rng=rng,
                     just_train_deep4=just_train_deep4,
                     n_virtual_chans=n_virtual_chans,
@@ -890,41 +970,34 @@ def run_exp(
                 log.info("Determine max batch size...")
                 batch_size = 512
                 while not model_worked:
+                    duplicate_model = deepcopy(model_to_train)
                     try:
-                        # Try a forward-backward to ensure model works with batch size
-                        _, lp = model_to_train(
-                            th.zeros(batch_size, n_chans, n_times, device="cuda")
-                        )
-                        mean_lp = th.mean(lp)
-                        mean_lp.backward()
-                        _ = [
-                            p.grad.zero_()
-                            for p in model_to_train.parameters()
-                            if p.grad is not None
-                        ]
+
+                        try_run_backward(duplicate_model, batch_size, n_chans, n_times_train)
+                        try_run_forward(duplicate_model, batch_size, n_chans, n_times_eval)
                         model_worked = True
                         log.info(f"Batch size: {batch_size}")
                     except RuntimeError as e:
                         log.info(f"Batch size {batch_size} failed.")
-
+                        del duplicate_model
+                        duplicate_model = deepcopy(model_to_train)
                         # clear gpu memory by forwarding minimal batch
-                        mean_lp = None
-                        lp = None
                         import gc
                         gc.collect()
                         th.cuda.empty_cache()
 
-                        _, lp = model_to_train(
-                            th.zeros(1, n_chans, n_times, device="cuda")
+                        _, lp = duplicate_model(
+                            th.zeros(1, n_chans, n_times_train, device="cuda")
                         )
                         mean_lp = th.mean(lp)
                         mean_lp.backward()
                         batch_size = batch_size // 2
-                        print(e)
                         if batch_size == 1:
                             raise e
+                        traceback.print_exc()
                 # still divide batch size by half to esnure some buffer
                 batch_size = batch_size // 2
+                del duplicate_model
             else:
                 batch_size = fixed_batch_size
 
@@ -945,6 +1018,25 @@ def run_exp(
                     model_to_train, encoding["linear_clf"], n_times=n_times_crop
                 ).cuda()
             # result and encoding
+            import gc
+            gc.collect()
+            th.cuda.empty_cache()
+
+            scheduler_callable = dict(
+                identity=functools.partial(
+                    th.optim.lr_scheduler.LambdaLR, lr_lambda=lambda epoch: 1
+                ),
+                cosine=functools.partial(
+                    th.optim.lr_scheduler.CosineAnnealingLR,
+                    T_max=n_epochs * (len(train_set) // batch_size),
+                ),
+                cosine_with_warmup=functools.partial(
+                    get_cosine_warmup_scheduler,
+                    warmup_steps=len(train_set) // batch_size,  # 1 epoch warmup
+                    cosine_steps=(n_epochs - 1) * (len(train_set) // batch_size),
+                )
+            )[scheduler]
+
             results = train_glow(
                 model_to_train,
                 class_prob_masked,
@@ -956,21 +1048,18 @@ def run_exp(
                 n_epochs,
                 n_virtual_chans,
                 n_classes=n_classes,
-                n_times=n_times,
+                n_times_train=n_times_train,
                 np_th_seed=np_th_seed,
-                scheduler=dict(
-                    identity=functools.partial(
-                        th.optim.lr_scheduler.LambdaLR, lr_lambda=lambda epoch: 1
-                    ),
-                    cosine=functools.partial(
-                        th.optim.lr_scheduler.CosineAnnealingLR,
-                        T_max=len(train_set) // batch_size,
-                    ),
-                )[scheduler],
+                scheduler=scheduler_callable,
                 batch_size=batch_size,
                 optim_params_per_param=optim_params_per_param,
                 with_tqdm=False,
+                n_times_eval=n_times_eval,
+                channel_drop_p=channel_drop_p,
+                n_times_crop=n_times_crop,
+                n_eval_crops=n_eval_crops,
             )
+
             metrics = results
             runtime = time.time() - start_time
             results["runtime"] = runtime

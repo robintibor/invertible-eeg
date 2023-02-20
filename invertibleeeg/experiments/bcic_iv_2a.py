@@ -18,7 +18,8 @@ from invertible.view_as import flatten_2d
 from invertibleeeg.datasets import load_train_valid_bcic_iv_2a
 from invertibleeeg.models.glow import create_eeg_glow, create_eeg_glow_multi_stage
 from skorch.utils import to_numpy
-#from tensorboardX import SummaryWriter
+
+# from tensorboardX import SummaryWriter
 from tqdm.autonotebook import trange
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ log = logging.getLogger(__name__)
 
 def train_deep4(train_set, valid_set, n_epochs):
     cuda = torch.cuda.is_available()
-    device = 'cuda'
+    device = "cuda"
 
     n_classes = 4
     # Extract number of chans and time steps from dataset
@@ -112,22 +113,26 @@ def add_virtual_chans(x, n_virtual_chans):
 
 
 def train_glow(
-        net,
-        class_prob_masked,
-        nll_loss_factor,
-        noise_factor,
-        train_set,
-        valid_set,
-        test_set,
-        n_epochs,
-        n_virtual_chans,
-        n_classes,
-        n_times,
-        np_th_seed,
-        scheduler,
-        batch_size,
-        optim_params_per_param,
-        with_tqdm,
+    net,
+    class_prob_masked,
+    nll_loss_factor,
+    noise_factor,
+    train_set,
+    valid_set,
+    test_set,
+    n_epochs,
+    n_virtual_chans,
+    n_classes,
+    n_times_train,
+    np_th_seed,
+    scheduler,
+    batch_size,
+    optim_params_per_param,
+    with_tqdm,
+    n_times_eval,
+    channel_drop_p,
+    n_times_crop,
+    n_eval_crops,
 ):
     if not with_tqdm:
         trange = range
@@ -137,7 +142,6 @@ def train_glow(
 
     n_real_chans = train_set[0][0].shape[0]
     n_input_times = train_set[0][0].shape[1]
-    i_start_center_crop = (n_input_times // 2) - (n_times // 2)
     n_chans = n_real_chans + n_virtual_chans
 
     train_loader = th.utils.data.DataLoader(
@@ -150,58 +154,83 @@ def train_glow(
         test_set, batch_size=batch_size, shuffle=False, num_workers=0
     )
 
+    if any(
+        [
+            hasattr(m, "initialize_this_forward") and (not m.initialized)
+            for m in net.modules()
+        ]
+    ):
+        i_start_center_crop = (n_input_times // 2) - (n_times_train // 2)
+        init_all_modules(
+            net,
+            th.cat(
+                [
+                    add_virtual_chans(
+                        x[
+                            :,
+                            :,
+                            i_start_center_crop : i_start_center_crop + n_times_train,
+                        ],
+                        n_virtual_chans,
+                    )
+                    + th.randn(
+                        x.shape[0],
+                        n_chans,
+                        n_times_train,
+                    )
+                    * noise_factor
+                    for x, y, i in islice(train_loader, 10)
+                ],
+                dim=0,
+            ).cuda(),
+            init_only_uninitialized=True,
+        )
 
-    init_all_modules(
-        net,
-        th.cat(
-            [
-                add_virtual_chans(x[:, :, i_start_center_crop: i_start_center_crop + n_times], n_virtual_chans)
-                + th.randn(x.shape[0], n_chans, n_times, ) * noise_factor
-                for x, y, i in islice(train_loader, 10)
-            ],
-            dim=0,
-        ).cuda(),
-        init_only_uninitialized=True,
-    )
-
-
-    for n,p in net.named_parameters():
+    for n, p in net.named_parameters():
         assert p in optim_params_per_param, f"Parameter {n} does not have optim params"
     net_parameters = list(net.parameters())
     for p in optim_params_per_param:
-        assert any([p is param for param in net_parameters]), (
-            "every optimized parameter should be a parameter of the network")
-    param_dicts = [dict(params=[p], **optim_params_per_param[p]) for p in net.parameters()]
-    #if not class_prob_masked:
+        assert any(
+            [p is param for param in net_parameters]
+        ), "every optimized parameter should be a parameter of the network"
+    param_dicts = [
+        dict(params=[p], **optim_params_per_param[p]) for p in net.parameters()
+    ]
+    # if not class_prob_masked:
     #    param_dicts = [dict(params=list(net.parameters()), lr=start_lr, weight_decay=5e-5)]
-    #else:
-        #param_dicts = [dict(params=[p for p in  net.parameters() if p is not net.alphas], lr=5e-4, weight_decay=5e-5)]
-        #param_dicts.append(dict(params=[net.alphas], lr=5e-2))
+    # else:
+    # param_dicts = [dict(params=[p for p in  net.parameters() if p is not net.alphas], lr=5e-4, weight_decay=5e-5)]
+    # param_dicts.append(dict(params=[net.alphas], lr=5e-2))
 
     optim = th.optim.AdamW(param_dicts)
     this_scheduler = scheduler(optim)
 
-
-
     rng = np.random.RandomState(np_th_seed)
 
+    i_epoch = 0
     for i_epoch in trange(n_epochs):
         net.train()
         for X_th, y, _ in train_loader:
-            i_start_time = rng.randint(0, X_th.shape[2] - n_times + 1)
-            X_th = X_th[:, :, i_start_time: i_start_time + n_times]
+            i_start_time = rng.randint(0, X_th.shape[2] - n_times_train + 1)
+            X_th = X_th[:, :, i_start_time : i_start_time + n_times_train]
+            if channel_drop_p > 0:
+                mask = th.bernoulli(
+                    th.zeros_like(X_th[:, :, :1]) + (1 - channel_drop_p)
+                )
+                X_th = X_th * mask
             X_th = add_virtual_chans(X_th, n_virtual_chans)
+
             # noise added after
-            y_th = th.nn.functional.one_hot(y.type(th.int64), num_classes=n_classes).cuda()
+            y_th = th.nn.functional.one_hot(
+                y.type(th.int64), num_classes=n_classes
+            ).cuda()
             noise = th.randn_like(X_th) * noise_factor
             noised = X_th + noise
             z, lp_per_dim = net(noised.cuda(), fixed=dict(y=None, sum_dims=False))
             lp = th.sum(lp_per_dim, dim=-1)
             if class_prob_masked:
                 mask = th.sigmoid(net.alphas)
-                lp_for_c = th.sum(
-                    mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
-                )
+                lp_for_c = th.sum(mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1)
             else:
                 lp_for_c = lp
             cross_ent = th.nn.functional.cross_entropy(
@@ -209,60 +238,80 @@ def train_glow(
                 y_th.argmax(dim=1),
             )
             nll = -th.mean(th.sum(lp * y_th, dim=1))
-            loss = weighted_sum(1, 1, cross_ent, nll_loss_factor, nll)
+            # ignoring noise log probs, just for training
+            pseudo_bpd = nll / (n_real_chans * n_times_crop * np.log(2))
+            loss = weighted_sum(1, 1, cross_ent, nll_loss_factor, pseudo_bpd)
             optim.zero_grad()
             loss.backward()
             if grads_all_finite:
                 optim.step()
             optim.zero_grad()
             this_scheduler.step()
-    #if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
+            # print(i_epoch)
+            # for g in optim.param_groups:
+            #     print("lr", g['lr'])
+    # if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
+    i_start_center_crop = (n_input_times // 2) - (n_times_eval // 2)
     print(i_epoch)
     net.eval()
     results = {}
-    for name, loader in (("train", train_loader), ("valid", valid_loader), ("test", test_loader)):
+    for name, loader in (
+        ("train", train_loader),
+        ("valid", valid_loader),
+        ("test", test_loader),
+    ):
         all_lps = []
         all_corrects = []
         for X_th, y, _ in loader:
             with th.no_grad():
-                X_th = X_th[
-                       :, :, i_start_center_crop: i_start_center_crop + n_times
-                       ]
-                X_th = add_virtual_chans(X_th, n_virtual_chans)
-                y_th = th.nn.functional.one_hot(
-                    y.type(th.int64), num_classes=n_classes
-                ).cuda()
-                # First with noise to get nll for bpd,
-                # then without noise for accuracy
-                noise = th.randn_like(X_th) * noise_factor
-                noised = X_th + noise
-                noise_log_prob = get_gaussian_log_probs(
-                    th.zeros_like(X_th[0]).view(-1),
-                    th.log(th.zeros_like(X_th[0]) + noise_factor).view(-1),
-                    flatten_2d(noise),
+                crop_lps = []
+                crop_lp_per_dims = []
+                i_crop_starts = np.unique(
+                    np.int64(
+                        np.linspace(
+                            0, n_input_times - n_times_eval, n_eval_crops
+                        ).round()
+                    )
                 )
-                z, lp = net(noised.cuda())
-                lps = to_numpy(th.sum(lp * y_th, dim=1) - noise_log_prob.cuda())
+                for i_crop_start in i_crop_starts:
+                    crop_X_th = X_th[:, :, i_crop_start : i_crop_start + n_times_eval]
+                    crop_X_th = add_virtual_chans(crop_X_th, n_virtual_chans)
+                    y_th = th.nn.functional.one_hot(
+                        y.type(th.int64), num_classes=n_classes
+                    ).cuda()
+                    # For now lt's do both with noise, so not like comment below
+                    # First with noise to get nll for bpd,
+                    # then without noise for accuracy
+                    noise = th.randn_like(crop_X_th) * noise_factor
+                    noised = crop_X_th + noise
+                    noise_log_prob = get_gaussian_log_probs(
+                        th.zeros_like(crop_X_th[0]).view(-1),
+                        th.log(th.zeros_like(crop_X_th[0]) + noise_factor).view(-1),
+                        flatten_2d(noise),
+                    )
+                    z, lp_per_dim = net(
+                        noised.cuda(), fixed=dict(y=None, sum_dims=False)
+                    )
+                    lp = th.sum(lp_per_dim, dim=-1)
+                    lps = to_numpy(th.sum(lp * y_th, dim=1) - noise_log_prob.cuda())
+                    crop_lps.append(lps)
+                    crop_lp_per_dims.append(lp_per_dim.cpu())
+
+                lps = np.mean(np.stack(crop_lps), axis=0)
+                lp_per_dim = th.stack(crop_lp_per_dims).mean(dim=0)
                 all_lps.extend(lps)
-                z, lp_per_dim = net(
-                    X_th.cuda(), fixed=dict(y=None, sum_dims=False)
-                )
-                lp = th.sum(lp_per_dim, dim=-1)
                 if class_prob_masked:
                     mask = th.sigmoid(net.alphas)
                     lp_for_c = th.sum(
-                        mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1
+                        mask.unsqueeze(0).unsqueeze(0).cpu() * lp_per_dim, dim=-1
                     )
                 else:
-                    lp_for_c = lp
-                corrects = to_numpy(y.cuda() == lp_for_c.argmax(dim=1))
+                    lp_for_c = th.sum(lp_per_dim, dim=-1)
+                corrects = to_numpy(y.cpu() == lp_for_c.argmax(dim=1))
                 all_corrects.extend(corrects)
         acc = np.mean(all_corrects)
-        nll = -(
-                np.mean(all_lps)
-                / (np.prod(X_th.shape[1:]) * np.log(2) * (n_real_chans / n_chans))
-        )
-        results[f"{name}_mis"] = 1-acc
+        nll = -(np.mean(all_lps) / (n_real_chans * n_times_crop * np.log(2)))
+        results[f"{name}_mis"] = 1 - acc
         results[f"{name}_nll"] = nll
     for key, val in results.items():
         print(f"{key:10s}: {val:.3f}")
@@ -285,10 +334,10 @@ def run_exp(
     splitter_last,
     n_times,
 ):
-    #hparams = {k: v for k, v in locals().items() if v is not None}
-    #writer = SummaryWriter(output_dir)
-    #writer.add_hparams(hparams, metric_dict={}, name=output_dir)
-    #writer.flush()
+    # hparams = {k: v for k, v in locals().items() if v is not None}
+    # writer = SummaryWriter(output_dir)
+    # writer.add_hparams(hparams, metric_dict={}, name=output_dir)
+    # writer.flush()
 
     n_blocks_up = 2
     n_blocks_down = 2
@@ -306,10 +355,11 @@ def run_exp(
 
     set_random_seeds(np_th_seed, True)
     train_set, valid_set = load_train_valid_bcic_iv_2a(
-        subject_id, class_names, split_valid_off_train,
+        subject_id,
+        class_names,
+        split_valid_off_train,
         all_subjects_in_each_fold=True,
     )
-
 
     n_real_chans = train_set[0][0].shape[0]
     n_chans = n_real_chans + n_virtual_chans
@@ -340,7 +390,8 @@ def run_exp(
 
         batch_size = 64
         optim_params_per_param = {
-            p: dict(lr=1e-3, weight_decay=5e-5) for p in net.parameters()}
+            p: dict(lr=1e-3, weight_decay=5e-5) for p in net.parameters()
+        }
         if class_prob_masked:
             net.alphas = nn.Parameter(
                 th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
@@ -368,5 +419,5 @@ def run_exp(
             optim_params_per_param=optim_params_per_param,
         )
 
-    #writer.close()
+    # writer.close()
     return results

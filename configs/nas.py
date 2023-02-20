@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-64-Hz/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-1-bpd-loss-4-Hz-64-sfreq-deep4/",
         }
     ]
 
@@ -44,9 +44,10 @@ def get_grid_param_list():
             "n_epochs": [3],  # [20],
             "fixed_lr": [None],
             "fixed_batch_size": [None],
-            "nll_loss_factor": [3e-2],  # [0],#[3e-2],
             "alpha_lr": [1e-2],
-            "n_times_crop": [256],
+            "n_times_crop": [192],
+            "channel_drop_p": [0.],
+            "n_eval_crops": [3],
         }
     )
 
@@ -54,14 +55,15 @@ def get_grid_param_list():
         {
             "subject_id": [None],
             "all_subjects_in_each_fold": [True],
-            "n_times": [288],
+            "n_times_train": [208],
+            "n_times_eval": [208],
             "sfreq": [64],
             "class_names": [
                 ["left_hand", "right_hand", "feet", "tongue"]
             ],  # "tongue"]],
             "trial_start_offset_sec": [-0.5],
             "split_valid_off_train": [True],
-            "low_cut_hz": [None],
+            "low_cut_hz": [4],
             "high_cut_hz": [None],
             "exponential_standardize": [False],
         }
@@ -79,12 +81,34 @@ def get_grid_param_list():
         }
     )
 
+    variants = dictlistprod(
+        {
+            "just_train_deep4": [True],
+            "nll_loss_factor": [0],#3e-2],  # [0],#[3e-2],
+            "max_n_changes": [0],
+            "max_n_deletions": [0],
+             "class_prob_masked": [False],  # [True],
+        },
+        # {
+        #     "just_train_deep4": [False],
+        #     "nll_loss_factor": [1e-5],#3e-2],  # [0],#[3e-2],
+        #     "max_n_changes": [0],
+        #     "max_n_deletions": [0],
+        #      "class_prob_masked": [True],  # [True],
+        # },
+        # {
+        #     "just_train_deep4": [False],
+        #     "nll_loss_factor": [1],#]3e-1],#3e-2],  # [0],#[3e-2],
+        #     "max_n_changes": [2],
+        #     "max_n_deletions": [1],
+        #     "class_prob_masked": [True],  # [True],
+        # },
+    )
+
     model_params = dictlistprod(
         {
             "amplitude_phase_at_end": [False],
-            "class_prob_masked": [True],  # [True],
-            "sample_dist_module": [True],
-            "just_train_deep4": [False],
+            "dist_module_choices": [["perdimweightedmix"]],#"perdimweightedmix",
             "n_virtual_chans": [0],
             "linear_glow_clf": [False],
             "splitter_name": ["subsample"],  # "haar"
@@ -93,11 +117,11 @@ def get_grid_param_list():
 
     search_params = [
         {
-            "max_hours": 0.25,
+            "max_hours": 0.25,#0.25,
             "n_start_population": 50,
             "n_alive_population": 300,
-            "max_n_changes": 3,
             "search_by": "valid_mis",
+            "mutate_optim_params": False,
         }
     ]
 
@@ -107,7 +131,7 @@ def get_grid_param_list():
             "include_splitter": [False],
             # "coupling_block", #"act_norm",
             "included_blocks": [
-                ["coupling_block", "permute", "act_norm"],#"permute",deep4_coupling
+                ["coupling_block", "permute", "act_norm"],#"act_norm"#"permute",deep4_coupling
             ],
             "limit_n_downsample": [None],
         },
@@ -124,6 +148,7 @@ def get_grid_param_list():
             model_params,
             search_params,
             searchspace_params,
+            variants,
         ]
     )
 
@@ -148,7 +173,8 @@ def run(
     n_epochs,
     amplitude_phase_at_end,
     all_subjects_in_each_fold,
-    n_times,
+    n_times_train,
+    n_times_eval,
     max_n_changes,
     fixed_lr,
     searchspace,
@@ -159,7 +185,7 @@ def run(
     nll_loss_factor,
     search_by,
     alpha_lr,
-    sample_dist_module,
+    dist_module_choices,
     scheduler,
     trial_start_offset_sec,
     n_times_crop,
@@ -174,6 +200,10 @@ def run(
     included_blocks,
     limit_n_downsample,
     sfreq,
+    mutate_optim_params,
+    max_n_deletions,
+    channel_drop_p,
+    n_eval_crops,
 ):
     if debug:
         n_start_population = 2

@@ -1,9 +1,9 @@
 from braindecode.datasets import BaseConcatDataset
 from braindecode.datasets.moabb import MOABBDataset
 from braindecode.preprocessing import exponential_moving_standardize
-from braindecode.preprocessing.preprocess import Preprocessor
-from braindecode.datautil.preprocess import preprocess, scale
-from braindecode.datautil.windowers import create_windows_from_events
+from braindecode.preprocessing import Preprocessor
+from braindecode.preprocessing import preprocess, scale
+from braindecode.preprocessing.windowers import create_windows_from_events
 from torch.utils.data import Subset
 import numpy as np
 
