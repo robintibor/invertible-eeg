@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/bcic-iv-2a-1-bpd-loss-4-Hz-64-sfreq-deep4/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/hgd-subject-4-masked-independent-low-cut-4-H-alpha-lr-1e-1/",
         }
     ]
 
@@ -44,28 +44,31 @@ def get_grid_param_list():
             "n_epochs": [3],  # [20],
             "fixed_lr": [None],
             "fixed_batch_size": [None],
-            "alpha_lr": [1e-2],
-            "n_times_crop": [192],
+            "alpha_lr": [1e-2],#[1e-2],
+            "n_times_crop": [128],
             "channel_drop_p": [0.],
             "n_eval_crops": [3],
+            "scheduler": ["cosine"],
         }
     )
 
     data_params = dictlistprod(
         {
-            "subject_id": [None],
+            "subject_id": [4],
             "all_subjects_in_each_fold": [True],
-            "n_times_train": [208],
-            "n_times_eval": [208],
-            "sfreq": [64],
-            "class_names": [
-                ["left_hand", "right_hand", "feet", "tongue"]
-            ],  # "tongue"]],
+            "n_times_train": [144],
+            "n_times_eval": [144],
+            "sfreq": [32],
             "trial_start_offset_sec": [-0.5],
             "split_valid_off_train": [True],
             "low_cut_hz": [4],
             "high_cut_hz": [None],
             "exponential_standardize": [False],
+            "class_names": [
+                #["left_hand", "right_hand", "feet", "tongue"]
+                ["left_hand", "right_hand", "feet", "rest"]
+            ],
+            "dataset_name": ["hgd"],
         }
     )
 
@@ -75,20 +78,15 @@ def get_grid_param_list():
         }
     )
 
-    optim_params = dictlistprod(
-        {
-            "scheduler": ["cosine"],
-        }
-    )
 
     variants = dictlistprod(
-        {
-            "just_train_deep4": [True],
-            "nll_loss_factor": [0],#3e-2],  # [0],#[3e-2],
-            "max_n_changes": [0],
-            "max_n_deletions": [0],
-             "class_prob_masked": [False],  # [True],
-        },
+        # {
+        #     "just_train_deep4": [True],
+        #     "nll_loss_factor": [0],#3e-2],  # [0],#[3e-2],
+        #     "max_n_changes": [0],
+        #     "max_n_deletions": [0],
+        #      "class_prob_masked": [False],  # [True],
+        # },
         # {
         #     "just_train_deep4": [False],
         #     "nll_loss_factor": [1e-5],#3e-2],  # [0],#[3e-2],
@@ -96,19 +94,19 @@ def get_grid_param_list():
         #     "max_n_deletions": [0],
         #      "class_prob_masked": [True],  # [True],
         # },
-        # {
-        #     "just_train_deep4": [False],
-        #     "nll_loss_factor": [1],#]3e-1],#3e-2],  # [0],#[3e-2],
-        #     "max_n_changes": [2],
-        #     "max_n_deletions": [1],
-        #     "class_prob_masked": [True],  # [True],
-        # },
+        {
+            "just_train_deep4": [False],
+            "nll_loss_factor": [1],#]3e-1],#3e-2],  # [0],#[3e-2],
+            "max_n_changes": [2],
+            "max_n_deletions": [1],
+            "class_prob_masked": [False],#[True],  # [True],
+        },
     )
 
     model_params = dictlistprod(
         {
             "amplitude_phase_at_end": [False],
-            "dist_module_choices": [["perdimweightedmix"]],#"perdimweightedmix",
+            "dist_module_choices": [["maskedindependent"]],#"perdimweightedmix",
             "n_virtual_chans": [0],
             "linear_glow_clf": [False],
             "splitter_name": ["subsample"],  # "haar"
@@ -134,6 +132,7 @@ def get_grid_param_list():
                 ["coupling_block", "permute", "act_norm"],#"act_norm"#"permute",deep4_coupling
             ],
             "limit_n_downsample": [None],
+            "min_n_downsample": [1],
         },
     )
 
@@ -144,7 +143,6 @@ def get_grid_param_list():
             train_params,
             random_params,
             debug_params,
-            optim_params,
             model_params,
             search_params,
             searchspace_params,
@@ -204,6 +202,8 @@ def run(
     max_n_deletions,
     channel_drop_p,
     n_eval_crops,
+    dataset_name,
+    min_n_downsample,
 ):
     if debug:
         n_start_population = 2

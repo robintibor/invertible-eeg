@@ -24,7 +24,7 @@ from invertible.affine import AdditiveCoefs, AffineCoefs
 from invertible.affine import AffineModifier
 from invertible.amp_phase import AmplitudePhase
 from invertible.coupling import CouplingLayer
-from invertible.distribution import PerDimWeightedMix, NClassIndependentDist
+from invertible.distribution import PerDimWeightedMix, NClassIndependentDist, MaskedMixDist
 from invertible.expression import Expression
 from invertible.graph import Node
 from invertible.init import init_all_modules
@@ -34,7 +34,7 @@ from invertible.sequential import InvertibleSequential
 from invertible.split_merge import ChunkChansIn2
 from invertible.split_merge import EverySecondChan
 from invertible.view_as import Flatten2d
-from invertibleeeg.datasets import load_train_valid_test_bcic_iv_2a
+from invertibleeeg.datasets import load_train_valid_test_bcic_iv_2a, load_train_valid_test_hgd
 from invertibleeeg.experiments.bcic_iv_2a import train_glow
 from invertibleeeg.models.glow import get_splitter
 from ..factors import MultiplyFactors
@@ -98,6 +98,7 @@ def mutate_encoding_and_model(
     splitter_name,
     mutate_optim_params,
     max_n_deletions,
+    min_n_downsample,
 ):
     encoding = deepcopy(encoding)
 
@@ -145,7 +146,7 @@ def mutate_encoding_and_model(
             optim_params = sample_optim_config_space(seed=rng.randint(2**32))
             if fixed_lr is not None:
                 optim_params["lr"] = fixed_lr
-            n_downsample = rng.randint(0, max_n_downsample + 1)
+            n_downsample = rng.randint(min_n_downsample or 0, max_n_downsample + 1)
         elif sample_method == "own":
             i_block_to_copy = rng.choice(len(encoding["net"]))
             block_type = encoding["net"][i_block_to_copy]["key"]
@@ -669,9 +670,9 @@ def init_model_encoding(
     just_train_deep4,
     n_virtual_chans,
     linear_glow_clf,
+    n_real_chans,
 ):
     n_classes = 4
-    n_real_chans = 22
     init_dist_std = 0.1
     n_mixes = 8
     n_chans = n_real_chans + n_virtual_chans
@@ -699,7 +700,30 @@ def init_model_encoding(
             n_dims=n_dims,
             optimize_mean=True,
             optimize_std=True,
+            ),
+        "maskedmix":
+        functools.partial(
+            MaskedMixDist,
+            n_dims=n_dims,
+            dist=PerDimWeightedMix(
+            n_classes=n_classes,
+            n_mixes=n_mixes,
+            n_dims=n_dims,
+            optimize_mean=True,
+            optimize_std=True,
+            init_std=init_dist_std,),
+        ),
+        "maskedindependent":
+        functools.partial(
+            MaskedMixDist,
+            n_dims=n_dims,
+            dist=NClassIndependentDist(
+            n_classes=n_classes,
+            n_dims=n_dims,
+            optimize_mean=True,
+            optimize_std=True,
             )
+        ),
     }
 
     wanted_dist_module = rng.choice(dist_module_choices)
@@ -720,6 +744,12 @@ def init_model_encoding(
     net_encoding["optim_params_per_param"] = {}
     for p in net.parameters():
         net_encoding["optim_params_per_param"][p] = dict(lr=1e-3, weight_decay=5e-5)
+        if hasattr(dist, 'alphas'):
+            net_encoding["optim_params_per_param"][dist.alphas] = dict(
+            lr=alpha_lr, weight_decay=5e-5
+        )
+        else:
+            assert not wanted_dist_module == 'masked_mix'
     net = net.cuda()
     if class_prob_masked:
         net.alphas = nn.Parameter(
@@ -735,28 +765,35 @@ def init_model_encoding(
         from braindecode.models.util import get_output_shape
         from invertibleeeg.models.wrap_as_gen import WrapClfAsGen
 
-        #assert n_times == 128
-        input_window_samples = 144
-        n_chans = 22
-        n_classes = 4
+        if n_times == 1000:
+            model = Deep4Net(
+                n_chans,
+                n_classes,
+                input_window_samples=None,
+                final_conv_length=2,
+            )
+            to_dense_prediction_model(model)
+        else:
+            #assert n_times == 128
+            input_window_samples = 144
 
-        model = Deep4Net(
-            n_chans,
-            n_classes,
-            input_window_samples=input_window_samples,
-            final_conv_length=2,
-            pool_time_stride=2,
-            pool_time_length=2,
-            filter_time_length=10,
-            filter_length_2=9,
-            filter_length_3=7,
-            filter_length_4=7,
-        )
+            model = Deep4Net(
+                n_chans,
+                n_classes,
+                input_window_samples=input_window_samples,
+                final_conv_length=2,
+                pool_time_stride=2,
+                pool_time_length=2,
+                filter_time_length=10,
+                filter_length_2=9,
+                filter_length_3=7,
+                filter_length_4=7,
+            )
 
-        to_dense_prediction_model(model)
-        assert get_output_shape(model, n_chans, input_window_samples)[2] == (
-            input_window_samples - 128
-        )
+            to_dense_prediction_model(model)
+            assert get_output_shape(model, n_chans, input_window_samples)[2] == (
+                input_window_samples - 128
+            )
 
         new_modules = []
         for n, m in model.named_children():
@@ -841,28 +878,44 @@ def run_exp(
     max_n_deletions,
     channel_drop_p,
     n_eval_crops,
+    dataset_name,
+    min_n_downsample,
 ):
     noise_factor = 5e-3
     start_time = time.time()
-    n_real_chans = 22
-    n_chans = n_real_chans + n_virtual_chans
 
-    n_classes = 4
+    n_classes = len(class_names)
     # maybe specifiy via hparam to ensure you know of the change class_names = ["left_hand", "right_hand", "feet", "tongue"]
 
     set_random_seeds(np_th_seed, True)
     log.info("Load data...")
-    train_set, valid_set, test_set = load_train_valid_test_bcic_iv_2a(
-        subject_id,
-        class_names,
-        split_valid_off_train=split_valid_off_train,
-        all_subjects_in_each_fold=all_subjects_in_each_fold,
-        sfreq=sfreq,
-        trial_start_offset_sec=trial_start_offset_sec,
-        low_cut_hz=low_cut_hz,
-        high_cut_hz=high_cut_hz,
-        exponential_standardize=exponential_standardize,
-    )
+    if dataset_name == 'bcic_iv_2a':
+        train_set, valid_set, test_set = load_train_valid_test_bcic_iv_2a(
+            subject_id,
+            class_names,
+            split_valid_off_train=split_valid_off_train,
+            all_subjects_in_each_fold=all_subjects_in_each_fold,
+            sfreq=sfreq,
+            trial_start_offset_sec=trial_start_offset_sec,
+            low_cut_hz=low_cut_hz,
+            high_cut_hz=high_cut_hz,
+            exponential_standardize=exponential_standardize,
+        )
+    else:
+        assert dataset_name == 'hgd'
+        train_set, valid_set, test_set = load_train_valid_test_hgd(
+            subject_id,
+            class_names,
+            split_valid_off_train=split_valid_off_train,
+            all_subjects_in_each_fold=all_subjects_in_each_fold,
+            sfreq=sfreq,
+            trial_start_offset_sec=trial_start_offset_sec,
+            low_cut_hz=low_cut_hz,
+            high_cut_hz=high_cut_hz,
+            exponential_standardize=exponential_standardize,
+        )
+    n_real_chans = train_set[0][0].shape[0]
+    n_chans = n_real_chans + n_virtual_chans
 
     max_n_downsample = int(np.log2(n_times_crop or n_times_train) - 3)
     if limit_n_downsample is not None:
@@ -895,7 +948,8 @@ def run_exp(
             if population_df is not None and len(population_df) >= n_start_population:
                 # grab randomly one among top n_population
                 # change it, with chance of no change as well
-                sorted_pop_df = population_df.sort_values(by=search_by)
+                sorted_pop_df = population_df.sort_values(
+                    by=[search_by, 'pop_id'], ascending=[True, True])
                 this_parent = sorted_pop_df.iloc[
                     rng.randint(0, min(len(population_df), n_alive_population))
                 ]
@@ -932,6 +986,7 @@ def run_exp(
                             splitter_name=splitter_name,
                             mutate_optim_params=mutate_optim_params,
                             max_n_deletions=max_n_deletions,
+                            min_n_downsample=min_n_downsample,
                         )
                         model_to_train = encoding["node"].cuda()
                         if n_times_crop is not None:
@@ -959,6 +1014,7 @@ def run_exp(
                     just_train_deep4=just_train_deep4,
                     n_virtual_chans=n_virtual_chans,
                     linear_glow_clf=linear_glow_clf,
+                    n_real_chans=n_real_chans,
                 )
                 model_to_train = encoding["node"].cuda()
                 if n_times_crop is not None:

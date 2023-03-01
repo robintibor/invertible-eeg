@@ -5,10 +5,11 @@ import os
 import fasteners
 
 
-def delete_low_quality_model_params(population_csv_filename, n_best=500):
+def delete_low_quality_model_params(population_csv_filename, n_best=500, search_by='valid_mis'):
     with fasteners.InterProcessLock(population_csv_filename + ".lock"):
         population_df = pd.read_csv(population_csv_filename, index_col="pop_id")
-    to_delete_encodings_df = population_df.sort_values(by=['valid_mis', 'pop_id']).iloc[n_best:]
+    to_delete_encodings_df = population_df.sort_values(by=[search_by, 'pop_id'],
+                                                       ascending=[True, True]).iloc[n_best:]
     delete_model_params(to_delete_encodings_df)
 
 
