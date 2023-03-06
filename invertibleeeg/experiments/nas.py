@@ -29,9 +29,9 @@ from invertible.expression import Expression
 from invertible.graph import Node
 from invertible.init import init_all_modules
 from invertible.inverse import Inverse
-from invertible.permute import InvPermute
+from invertible.permute import InvPermute, Shuffle
 from invertible.sequential import InvertibleSequential
-from invertible.split_merge import ChunkChansIn2
+from invertible.split_merge import ChunkChansIn2, ChansFraction
 from invertible.split_merge import EverySecondChan
 from invertible.view_as import Flatten2d
 from invertibleeeg.datasets import load_train_valid_test_bcic_iv_2a, load_train_valid_test_hgd
@@ -294,7 +294,11 @@ def coupling_block(
     norm=None,
     nonlin=None,
     multiply_by_zeros=True,
+    channel_permutation="none",
+    fraction_unchanged=0.5,
 ):
+    n_unchanged = int(np.round(n_chans * fraction_unchanged))
+    n_changed = n_chans - n_unchanged
     assert nonlin is not None
     nonlin_layer = {
         "square": Expression(th.square),
@@ -303,10 +307,10 @@ def coupling_block(
     assert affine_or_additive in ["affine", "additive"]
     if affine_or_additive == "additive":
         CoefClass = AdditiveCoefs
-        n_chans_out = n_chans // 2
+        n_chans_out = n_changed
     else:
         CoefClass = functools.partial(AffineCoefs, splitter=EverySecondChan())
-        n_chans_out = n_chans
+        n_chans_out = n_changed * 2
 
     assert kernel_length % 2 == 1
     assert norm in [None, "none", "bnorm"]
@@ -331,11 +335,11 @@ def coupling_block(
         last_conv.bias.data.zero_()
 
     coupling_layer = CouplingLayer(
-        ChunkChansIn2(swap_dims=swap_dims),
+        ChansFraction(n_unchanged=n_unchanged, swap_dims=swap_dims),
         CoefClass(
             nn.Sequential(
                 nn.Conv1d(
-                    n_chans // 2,
+                    n_unchanged,
                     hidden_channels,
                     kernel_length,
                     padding=kernel_length // 2,
@@ -349,6 +353,20 @@ def coupling_block(
         ),
         AffineModifier(scale_fn, add_first=True, eps=0),
     )
+    if channel_permutation == "linear":
+        permuter = InvPermute(n_chans, fixed=False, use_lu=True,
+                              init_identity=False)
+        coupling_layer = InvertibleSequential(
+            permuter, coupling_layer,
+            Inverse(permuter, invert_logdet_sign=True))
+    elif channel_permutation == "shuffle":
+        shuffler = Shuffle(n_chans)
+        coupling_layer = InvertibleSequential(
+            shuffler, coupling_layer,
+            Inverse(shuffler, invert_logdet_sign=True))
+    else:
+        assert channel_permutation == "none"
+
     return coupling_layer
 
 
@@ -519,6 +537,16 @@ def get_downsample_anywhere_blocks(included_blocks):
                 CSH.CategoricalHyperparameter(
                     "multiply_by_zeros",
                     choices=[True, False],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "channel_permutation",
+                    choices=["none", "shuffle", "linear"],
+                    #choices=["none", "shuffle", "linear"],
+                ),
+                CSH.CategoricalHyperparameter(
+                    "fraction_unchanged",
+                    choices=[0.5,],
+                    #choices=[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
                 ),
             ],
             "chans_after": lambda x: x,
@@ -880,6 +908,7 @@ def run_exp(
     n_eval_crops,
     dataset_name,
     min_n_downsample,
+    hgd_sensors,
 ):
     noise_factor = 5e-3
     start_time = time.time()
@@ -913,6 +942,7 @@ def run_exp(
             low_cut_hz=low_cut_hz,
             high_cut_hz=high_cut_hz,
             exponential_standardize=exponential_standardize,
+            sensors=hgd_sensors,
         )
     n_real_chans = train_set[0][0].shape[0]
     n_chans = n_real_chans + n_virtual_chans

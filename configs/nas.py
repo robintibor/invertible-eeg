@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/hgd-subject-4-masked-independent-low-cut-4-H-alpha-lr-1e-1/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/hgd-subject-4-low-cut-4-C-valid-nll-search/",
         }
     ]
 
@@ -58,7 +58,7 @@ def get_grid_param_list():
             "all_subjects_in_each_fold": [True],
             "n_times_train": [144],
             "n_times_eval": [144],
-            "sfreq": [32],
+            "sfreq": [64],#32
             "trial_start_offset_sec": [-0.5],
             "split_valid_off_train": [True],
             "low_cut_hz": [4],
@@ -69,6 +69,7 @@ def get_grid_param_list():
                 ["left_hand", "right_hand", "feet", "rest"]
             ],
             "dataset_name": ["hgd"],
+            "hgd_sensors": ["C"],
         }
     )
 
@@ -106,7 +107,7 @@ def get_grid_param_list():
     model_params = dictlistprod(
         {
             "amplitude_phase_at_end": [False],
-            "dist_module_choices": [["maskedindependent"]],#"perdimweightedmix",
+            "dist_module_choices": [["maskedmix"]],#maskedindependent"perdimweightedmix",
             "n_virtual_chans": [0],
             "linear_glow_clf": [False],
             "splitter_name": ["subsample"],  # "haar"
@@ -118,7 +119,7 @@ def get_grid_param_list():
             "max_hours": 0.25,#0.25,
             "n_start_population": 50,
             "n_alive_population": 300,
-            "search_by": "valid_mis",
+            "search_by": "valid_nll",
             "mutate_optim_params": False,
         }
     ]
@@ -132,7 +133,7 @@ def get_grid_param_list():
                 ["coupling_block", "permute", "act_norm"],#"act_norm"#"permute",deep4_coupling
             ],
             "limit_n_downsample": [None],
-            "min_n_downsample": [1],
+            "min_n_downsample": [0],
         },
     )
 
@@ -204,6 +205,7 @@ def run(
     n_eval_crops,
     dataset_name,
     min_n_downsample,
+    hgd_sensors,
 ):
     if debug:
         n_start_population = 2
