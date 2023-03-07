@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/hgd-subject-4-low-cut-4-C-valid-nll-search/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/hgd-subject-1-7-low-cut-4-C/",
         }
     ]
 
@@ -54,7 +54,7 @@ def get_grid_param_list():
 
     data_params = dictlistprod(
         {
-            "subject_id": [4],
+            "subject_id": [[1,2,3,4,5,6,7]],#4
             "all_subjects_in_each_fold": [True],
             "n_times_train": [144],
             "n_times_eval": [144],
@@ -116,10 +116,11 @@ def get_grid_param_list():
 
     search_params = [
         {
-            "max_hours": 0.25,#0.25,
+            "min_improve_fraction": 0.1,
+            "max_hours": 2,#0.25,#0.25,
             "n_start_population": 50,
             "n_alive_population": 300,
-            "search_by": "valid_nll",
+            "search_by": "valid_mis",
             "mutate_optim_params": False,
         }
     ]
@@ -206,6 +207,7 @@ def run(
     dataset_name,
     min_n_downsample,
     hgd_sensors,
+    min_improve_fraction,
 ):
     if debug:
         n_start_population = 2

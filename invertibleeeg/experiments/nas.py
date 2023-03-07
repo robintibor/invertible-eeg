@@ -24,7 +24,11 @@ from invertible.affine import AdditiveCoefs, AffineCoefs
 from invertible.affine import AffineModifier
 from invertible.amp_phase import AmplitudePhase
 from invertible.coupling import CouplingLayer
-from invertible.distribution import PerDimWeightedMix, NClassIndependentDist, MaskedMixDist
+from invertible.distribution import (
+    PerDimWeightedMix,
+    NClassIndependentDist,
+    MaskedMixDist,
+)
 from invertible.expression import Expression
 from invertible.graph import Node
 from invertible.init import init_all_modules
@@ -34,7 +38,10 @@ from invertible.sequential import InvertibleSequential
 from invertible.split_merge import ChunkChansIn2, ChansFraction
 from invertible.split_merge import EverySecondChan
 from invertible.view_as import Flatten2d
-from invertibleeeg.datasets import load_train_valid_test_bcic_iv_2a, load_train_valid_test_hgd
+from invertibleeeg.datasets import (
+    load_train_valid_test_bcic_iv_2a,
+    load_train_valid_test_hgd, load_tuh_abnormal,
+)
 from invertibleeeg.experiments.bcic_iv_2a import train_glow
 from invertibleeeg.models.glow import get_splitter
 from ..factors import MultiplyFactors
@@ -104,24 +111,32 @@ def mutate_encoding_and_model(
 
     if mutate_optim_params:
         optim_lr_choices, optim_wd_choices = get_optim_choices()
-        assert optim_lr_choices.name == 'lr'
-        assert optim_wd_choices.name == 'weight_decay'
-        for p in encoding['optim_params_per_param']:
-            optim_params = encoding['optim_params_per_param'][p]
+        assert optim_lr_choices.name == "lr"
+        assert optim_wd_choices.name == "weight_decay"
+        for p in encoding["optim_params_per_param"]:
+            optim_params = encoding["optim_params_per_param"][p]
             if fixed_lr is None:
                 lr_change = rng.randint(-1, 2)
-                new_lr_ind = np.searchsorted(sorted(optim_lr_choices.choices),
-                                             optim_params['lr']) + lr_change
+                new_lr_ind = (
+                    np.searchsorted(
+                        sorted(optim_lr_choices.choices), optim_params["lr"]
+                    )
+                    + lr_change
+                )
                 new_lr_ind = max(0, min(new_lr_ind, len(optim_lr_choices.choices) - 1))
                 new_lr = sorted(optim_lr_choices.choices)[new_lr_ind]
-                optim_params['lr'] = new_lr
+                optim_params["lr"] = new_lr
 
             wd_change = rng.randint(-1, 2)
-            new_wd_ind = np.searchsorted(sorted(optim_wd_choices.choices),
-                                         optim_params['weight_decay']) + wd_change
+            new_wd_ind = (
+                np.searchsorted(
+                    sorted(optim_wd_choices.choices), optim_params["weight_decay"]
+                )
+                + wd_change
+            )
             new_wd_ind = max(0, min(new_wd_ind, len(optim_wd_choices.choices) - 1))
             new_wd = sorted(optim_wd_choices.choices)[new_wd_ind]
-            optim_params['weight_decay'] = new_wd
+            optim_params["weight_decay"] = new_wd
 
     model = encoding["node"]
     flat_node = model.prev[0]
@@ -238,7 +253,6 @@ def mutate_encoding_and_model(
             # invert logdet sign should not really matter
             final_blocks.insert(0, Inverse(block, invert_logdet_sign=True))
 
-
     flat_node.module.sequential = nn.Sequential(
         *(final_blocks + list(flat_node.module.sequential.children()))
     )
@@ -255,8 +269,9 @@ def mutate_encoding_and_model(
             prev_node = None
         assert len(deleted_node.next) == 1
         next_node = deleted_node.next[0]
-        next_node.change_prev(prev_node, notify_prev_nodes=True,
-                              remove_prev_node_next=True)
+        next_node.change_prev(
+            prev_node, notify_prev_nodes=True, remove_prev_node_next=True
+        )
         for p in deleted_node.module.parameters():
             encoding["optim_params_per_param"].pop(p)
 
@@ -322,11 +337,11 @@ def coupling_block(
         raise ValueError(f"Unexpected norm {norm}")
 
     last_conv = nn.Conv1d(
-                hidden_channels,
-                n_chans_out,
-                kernel_length,
-                padding=kernel_length // 2,
-            )
+        hidden_channels,
+        n_chans_out,
+        kernel_length,
+        padding=kernel_length // 2,
+    )
     if multiply_by_zeros:
         post_hoc_coefs = MultiplyFactors(n_chans_out)
     else:
@@ -354,16 +369,15 @@ def coupling_block(
         AffineModifier(scale_fn, add_first=True, eps=0),
     )
     if channel_permutation == "linear":
-        permuter = InvPermute(n_chans, fixed=False, use_lu=True,
-                              init_identity=False)
+        permuter = InvPermute(n_chans, fixed=False, use_lu=True, init_identity=False)
         coupling_layer = InvertibleSequential(
-            permuter, coupling_layer,
-            Inverse(permuter, invert_logdet_sign=True))
+            permuter, coupling_layer, Inverse(permuter, invert_logdet_sign=True)
+        )
     elif channel_permutation == "shuffle":
         shuffler = Shuffle(n_chans)
         coupling_layer = InvertibleSequential(
-            shuffler, coupling_layer,
-            Inverse(shuffler, invert_logdet_sign=True))
+            shuffler, coupling_layer, Inverse(shuffler, invert_logdet_sign=True)
+        )
     else:
         assert channel_permutation == "none"
 
@@ -391,12 +405,13 @@ def get_deep4_coef_net(n_chans, n_out_chans, dropout):
     to_dense_prediction_model(model)
     new_modules = []
     for n, m in model.named_children():
-        if n == "softmax": continue
-        if hasattr(m, 'stride'):
-            dilation =  m.dilation[0]
+        if n == "softmax":
+            continue
+        if hasattr(m, "stride"):
+            dilation = m.dilation[0]
             kernel_size = m.kernel_size[0]
             dilated_kernel_size = (kernel_size - 1) * dilation + 1
-            new_modules.append(nn.ReflectionPad2d((0,0,dilated_kernel_size - 1, 0)))
+            new_modules.append(nn.ReflectionPad2d((0, 0, dilated_kernel_size - 1, 0)))
         new_modules.append(m)
     new_model = nn.Sequential(*new_modules)
     return new_model
@@ -541,12 +556,14 @@ def get_downsample_anywhere_blocks(included_blocks):
                 CSH.CategoricalHyperparameter(
                     "channel_permutation",
                     choices=["none", "shuffle", "linear"],
-                    #choices=["none", "shuffle", "linear"],
+                    # choices=["none", "shuffle", "linear"],
                 ),
                 CSH.CategoricalHyperparameter(
                     "fraction_unchanged",
-                    choices=[0.5,],
-                    #choices=[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
+                    choices=[
+                        0.5,
+                    ],
+                    # choices=[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
                 ),
             ],
             "chans_after": lambda x: x,
@@ -591,7 +608,7 @@ def get_downsample_anywhere_blocks(included_blocks):
             ],
             "chans_after": lambda x: x,
             "position": "any",
-        }
+        },
     }
 
     wanted_blocks = {name: blocks[name] for name in included_blocks}
@@ -711,8 +728,7 @@ def init_model_encoding(
     n_dims = n_times * n_chans
 
     dist_module_options = {
-        "perdimweightedmix":
-        functools.partial(
+        "perdimweightedmix": functools.partial(
             PerDimWeightedMix,
             n_classes=n_classes,
             n_mixes=n_mixes,
@@ -721,36 +737,34 @@ def init_model_encoding(
             optimize_std=True,
             init_std=init_dist_std,
         ),
-        "nclassindependent":
-        functools.partial(
+        "nclassindependent": functools.partial(
             NClassIndependentDist,
             n_classes=n_classes,
             n_dims=n_dims,
             optimize_mean=True,
             optimize_std=True,
-            ),
-        "maskedmix":
-        functools.partial(
+        ),
+        "maskedmix": functools.partial(
             MaskedMixDist,
             n_dims=n_dims,
             dist=PerDimWeightedMix(
-            n_classes=n_classes,
-            n_mixes=n_mixes,
-            n_dims=n_dims,
-            optimize_mean=True,
-            optimize_std=True,
-            init_std=init_dist_std,),
+                n_classes=n_classes,
+                n_mixes=n_mixes,
+                n_dims=n_dims,
+                optimize_mean=True,
+                optimize_std=True,
+                init_std=init_dist_std,
+            ),
         ),
-        "maskedindependent":
-        functools.partial(
+        "maskedindependent": functools.partial(
             MaskedMixDist,
             n_dims=n_dims,
             dist=NClassIndependentDist(
-            n_classes=n_classes,
-            n_dims=n_dims,
-            optimize_mean=True,
-            optimize_std=True,
-            )
+                n_classes=n_classes,
+                n_dims=n_dims,
+                optimize_mean=True,
+                optimize_std=True,
+            ),
         ),
     }
 
@@ -772,12 +786,12 @@ def init_model_encoding(
     net_encoding["optim_params_per_param"] = {}
     for p in net.parameters():
         net_encoding["optim_params_per_param"][p] = dict(lr=1e-3, weight_decay=5e-5)
-        if hasattr(dist, 'alphas'):
+        if hasattr(dist, "alphas"):
             net_encoding["optim_params_per_param"][dist.alphas] = dict(
-            lr=alpha_lr, weight_decay=5e-5
-        )
+                lr=alpha_lr, weight_decay=5e-5
+            )
         else:
-            assert not wanted_dist_module == 'masked_mix'
+            assert not wanted_dist_module == "masked_mix"
     net = net.cuda()
     if class_prob_masked:
         net.alphas = nn.Parameter(
@@ -802,7 +816,7 @@ def init_model_encoding(
             )
             to_dense_prediction_model(model)
         else:
-            #assert n_times == 128
+            # assert n_times == 128
             input_window_samples = 144
 
             model = Deep4Net(
@@ -844,22 +858,14 @@ def init_model_encoding(
 
 
 def try_run_backward(model_to_train, batch_size, n_chans, n_times):
-    _, lp = model_to_train(
-        th.zeros(batch_size, n_chans, n_times, device="cuda")
-    )
+    _, lp = model_to_train(th.zeros(batch_size, n_chans, n_times, device="cuda"))
     mean_lp = th.mean(lp)
     mean_lp.backward()
-    _ = [
-        p.grad.zero_()
-        for p in model_to_train.parameters()
-        if p.grad is not None
-    ]
+    _ = [p.grad.zero_() for p in model_to_train.parameters() if p.grad is not None]
 
 
 def try_run_forward(model_to_train, batch_size, n_chans, n_times):
-    _, lp = model_to_train(
-        th.zeros(batch_size, n_chans, n_times, device="cuda")
-    )
+    _, lp = model_to_train(th.zeros(batch_size, n_chans, n_times, device="cuda"))
     mean_lp = th.mean(lp)
     return mean_lp.detach().item()
 
@@ -909,6 +915,7 @@ def run_exp(
     dataset_name,
     min_n_downsample,
     hgd_sensors,
+    min_improve_fraction,
 ):
     noise_factor = 5e-3
     start_time = time.time()
@@ -918,7 +925,7 @@ def run_exp(
 
     set_random_seeds(np_th_seed, True)
     log.info("Load data...")
-    if dataset_name == 'bcic_iv_2a':
+    if dataset_name == "bcic_iv_2a":
         train_set, valid_set, test_set = load_train_valid_test_bcic_iv_2a(
             subject_id,
             class_names,
@@ -930,8 +937,10 @@ def run_exp(
             high_cut_hz=high_cut_hz,
             exponential_standardize=exponential_standardize,
         )
+    elif dataset_name == 'tuh':
+        train_set, valid_set, test_set = load_tuh_abnormal()
     else:
-        assert dataset_name == 'hgd'
+        assert dataset_name == "hgd"
         train_set, valid_set, test_set = load_train_valid_test_hgd(
             subject_id,
             class_names,
@@ -953,8 +962,9 @@ def run_exp(
     block_fn = dict(
         simpleflow=partial(get_simpleflow_blocks, include_splitter=include_splitter),
         default=get_blocks,
-        downsample_anywhere=partial(get_downsample_anywhere_blocks,
-            included_blocks=included_blocks),
+        downsample_anywhere=partial(
+            get_downsample_anywhere_blocks, included_blocks=included_blocks
+        ),
     )[searchspace]
 
     rng = np.random.RandomState(np_th_seed)
@@ -965,7 +975,6 @@ def run_exp(
 
         @ex.main
         def wrap_run_exp():
-            start_time = time.time()
             csv_file = os.path.join(worker_folder, "population.csv")
             csv_lock_file = csv_file + ".lock"
             csv_file_lock = fasteners.InterProcessLock(csv_lock_file)
@@ -979,10 +988,12 @@ def run_exp(
                 # grab randomly one among top n_population
                 # change it, with chance of no change as well
                 sorted_pop_df = population_df.sort_values(
-                    by=[search_by, 'pop_id'], ascending=[True, True])
+                    by=[search_by, "pop_id"], ascending=[True, True]
+                )
                 this_parent = sorted_pop_df.iloc[
                     rng.randint(0, min(len(population_df), n_alive_population))
                 ]
+                last_metric_val = this_parent[search_by]
                 parent_folder = this_parent["folder"]
                 parent_encoding_filename = os.path.join(parent_folder, "encoding.pth")
                 parent_encoding = th.load(parent_encoding_filename)
@@ -1026,8 +1037,12 @@ def run_exp(
 
                         # Try a forward-backward to ensure model works
                         # Also here you should check function is unperturbed!!
-                        try_run_backward(model_to_train, batch_size, n_chans, n_times_train)
-                        try_run_forward(model_to_train, batch_size, n_chans, n_times_eval)
+                        try_run_backward(
+                            model_to_train, batch_size, n_chans, n_times_train
+                        )
+                        try_run_forward(
+                            model_to_train, batch_size, n_chans, n_times_eval
+                        )
                         model_worked = True
                         log.info("Model:\n" + str(model_to_train))
                     except RuntimeError as e:
@@ -1046,6 +1061,7 @@ def run_exp(
                     linear_glow_clf=linear_glow_clf,
                     n_real_chans=n_real_chans,
                 )
+                last_metric_val = np.inf
                 model_to_train = encoding["node"].cuda()
                 if n_times_crop is not None:
                     model_to_train = CroppedGlow(model_to_train, n_times=n_times_crop)
@@ -1059,8 +1075,12 @@ def run_exp(
                     duplicate_model = deepcopy(model_to_train)
                     try:
 
-                        try_run_backward(duplicate_model, batch_size, n_chans, n_times_train)
-                        try_run_forward(duplicate_model, batch_size, n_chans, n_times_eval)
+                        try_run_backward(
+                            duplicate_model, batch_size, n_chans, n_times_train
+                        )
+                        try_run_forward(
+                            duplicate_model, batch_size, n_chans, n_times_eval
+                        )
                         model_worked = True
                         log.info(f"Batch size: {batch_size}")
                     except RuntimeError as e:
@@ -1069,6 +1089,7 @@ def run_exp(
                         duplicate_model = deepcopy(model_to_train)
                         # clear gpu memory by forwarding minimal batch
                         import gc
+
                         gc.collect()
                         th.cuda.empty_cache()
 
@@ -1105,6 +1126,7 @@ def run_exp(
                 ).cuda()
             # result and encoding
             import gc
+
             gc.collect()
             th.cuda.empty_cache()
 
@@ -1120,34 +1142,58 @@ def run_exp(
                     get_cosine_warmup_scheduler,
                     warmup_steps=len(train_set) // batch_size,  # 1 epoch warmup
                     cosine_steps=(n_epochs - 1) * (len(train_set) // batch_size),
-                )
+                ),
             )[scheduler]
 
-            results = train_glow(
-                model_to_train,
-                class_prob_masked,
-                nll_loss_factor,
-                noise_factor,
-                train_set,
-                valid_set,
-                test_set,
-                n_epochs,
-                n_virtual_chans,
-                n_classes=n_classes,
-                n_times_train=n_times_train,
-                np_th_seed=np_th_seed,
-                scheduler=scheduler_callable,
-                batch_size=batch_size,
-                optim_params_per_param=optim_params_per_param,
-                with_tqdm=False,
-                n_times_eval=n_times_eval,
-                channel_drop_p=channel_drop_p,
-                n_times_crop=n_times_crop,
-                n_eval_crops=n_eval_crops,
-            )
-
+            results = None
+            encoding_before_last_train = None
+            log.info("Start training...")
+            while (results is None) or (
+                results[search_by] < ((1 - min_improve_fraction) * last_metric_val)
+            ):
+                if results is not None:
+                    log.info("Continue training...")
+                    last_metric_val = results[search_by]
+                    # store encoding before last train (moving node to cpu)
+                    # (set this to none before loop)
+                    encoding_before_last_train = deepcopy(encoding)
+                    encoding_before_last_train["node"].cpu()
+                    # also store last results
+                    results_before_last_train = results
+                start_train_time = time.time() # Measure only train time
+                results = train_glow(
+                    model_to_train,
+                    class_prob_masked,
+                    nll_loss_factor,
+                    noise_factor,
+                    train_set,
+                    valid_set,
+                    test_set,
+                    n_epochs,
+                    n_virtual_chans,
+                    n_classes=n_classes,
+                    n_times_train=n_times_train,
+                    np_th_seed=np_th_seed,
+                    scheduler=scheduler_callable,
+                    batch_size=batch_size,
+                    optim_params_per_param=optim_params_per_param,
+                    with_tqdm=False,
+                    n_times_eval=n_times_eval,
+                    channel_drop_p=channel_drop_p,
+                    n_times_crop=n_times_crop,
+                    n_eval_crops=n_eval_crops,
+                )
+            log.info("Finished training...")
+            runtime = time.time() - start_train_time
+            del model_to_train, optim_params_per_param
+            # if result was better one training round earlier
+            # reset to that
+            if (encoding_before_last_train is not None) and (
+              results_before_last_train[search_by] < results[search_by]
+            ):
+                results = results_before_last_train
+                encoding = encoding_before_last_train
             metrics = results
-            runtime = time.time() - start_time
             results["runtime"] = runtime
             for key, val in metrics.items():
                 ex.info[key] = val
@@ -1175,5 +1221,25 @@ def run_exp(
 
         ex.add_config(config)
         ex.run()
-    results = {}
+    # Store best result as overall result
+    csv_file = os.path.join(worker_folder, "population.csv")
+    csv_lock_file = csv_file + ".lock"
+    with fasteners.InterProcessLock(csv_lock_file):
+        population_df = pd.read_csv(csv_file, index_col="pop_id")
+    results = dict(
+        population_df.sort_values(by=[search_by, "pop_id"])
+        .loc[
+            :,
+            [
+                "runtime",
+                "test_mis",
+                "test_nll",
+                "train_mis",
+                "train_nll",
+                "valid_mis",
+                "valid_nll",
+            ],
+        ]
+        .iloc[0]
+    )
     return results
