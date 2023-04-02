@@ -56,6 +56,8 @@ def get_grid_param_list():
             "class_names": [["left_hand", "right_hand", "feet", "rest"]],
             "dataset_name": ["hgd"],
             "hgd_sensors": ["C"],
+            "n_tuh_recordings": [None],
+            "n_times_crop": [128],
         }
     )
 
@@ -109,9 +111,12 @@ def run(
     n_max_epochs,
     np_th_seed,
     ignore_errors,
+    n_tuh_recordings,
+    n_times_crop,
 ):
     if debug:
-        n_epochs = 2
+        n_max_epochs = 2
+        n_tuh_recordings = 300
     kwargs = locals()
     kwargs.pop("ex")
     if not debug:

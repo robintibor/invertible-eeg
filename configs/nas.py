@@ -29,7 +29,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/hgd-subject-1-7-low-cut-4-C/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/tuh-abnormal-all-data-2-class/",
         }
     ]
 
@@ -45,6 +45,7 @@ def get_grid_param_list():
             "fixed_lr": [None],
             "fixed_batch_size": [None],
             "alpha_lr": [1e-2],#[1e-2],
+            "dist_lr": [1e-3],
             "n_times_crop": [128],
             "channel_drop_p": [0.],
             "n_eval_crops": [3],
@@ -68,8 +69,9 @@ def get_grid_param_list():
                 #["left_hand", "right_hand", "feet", "tongue"]
                 ["left_hand", "right_hand", "feet", "rest"]
             ],
-            "dataset_name": ["hgd"],
+            "dataset_name": ["tuh"],
             "hgd_sensors": ["C"],
+            "n_tuh_recordings": [None],
         }
     )
 
@@ -208,11 +210,15 @@ def run(
     min_n_downsample,
     hgd_sensors,
     min_improve_fraction,
+    n_tuh_recordings,
+    dist_lr,
+    n_virtual_classes,
 ):
     if debug:
         n_start_population = 2
         n_alive_population = 2
         n_epochs = 2
+        n_tuh_recordings = 300
     kwargs = locals()
     kwargs.pop("ex")
     if not debug:

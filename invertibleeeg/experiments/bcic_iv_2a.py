@@ -134,6 +134,7 @@ def train_glow(
     n_times_crop,
     n_eval_crops,
 ):
+    assert not class_prob_masked
     if not with_tqdm:
         trange = range
     else:
@@ -226,18 +227,12 @@ def train_glow(
             ).cuda()
             noise = th.randn_like(X_th) * noise_factor
             noised = X_th + noise
-            z, lp_per_dim = net(noised.cuda(), fixed=dict(y=None, sum_dims=False))
-            lp = th.sum(lp_per_dim, dim=-1)
-            if class_prob_masked:
-                mask = th.sigmoid(net.alphas)
-                lp_for_c = th.sum(mask.unsqueeze(0).unsqueeze(0) * lp_per_dim, dim=-1)
-            else:
-                lp_for_c = lp
+            z, lp_per_class = net(noised.cuda(), fixed=dict(y=None, sum_dims=True))
             cross_ent = th.nn.functional.cross_entropy(
-                lp_for_c,
+                lp_per_class,
                 y_th.argmax(dim=1),
             )
-            nll = -th.mean(th.sum(lp * y_th, dim=1))
+            nll = -th.mean(th.sum(lp_per_class * y_th, dim=1))
             # ignoring noise log probs, just for training
             pseudo_bpd = nll / (n_real_chans * n_times_crop * np.log(2))
             loss = weighted_sum(1, 1, cross_ent, nll_loss_factor, pseudo_bpd)
@@ -251,7 +246,6 @@ def train_glow(
             # for g in optim.param_groups:
             #     print("lr", g['lr'])
     # if (i_epoch % max(n_epochs // 10, 1) == 0) or (i_epoch == n_epochs):
-    i_start_center_crop = (n_input_times // 2) - (n_times_eval // 2)
     print(i_epoch)
     net.eval()
     results = {}
@@ -264,8 +258,6 @@ def train_glow(
         all_corrects = []
         for X_th, y, _ in loader:
             with th.no_grad():
-                crop_lps = []
-                crop_lp_per_dims = []
                 i_crop_starts = np.unique(
                     np.int64(
                         np.linspace(
@@ -273,6 +265,8 @@ def train_glow(
                         ).round()
                     )
                 )
+                crop_lps = []
+                crop_lp_per_class = []
                 for i_crop_start in i_crop_starts:
                     crop_X_th = X_th[:, :, i_crop_start : i_crop_start + n_times_eval]
                     crop_X_th = add_virtual_chans(crop_X_th, n_virtual_chans)
@@ -289,25 +283,17 @@ def train_glow(
                         th.log(th.zeros_like(crop_X_th[0]) + noise_factor).view(-1),
                         flatten_2d(noise),
                     )
-                    z, lp_per_dim = net(
-                        noised.cuda(), fixed=dict(y=None, sum_dims=False)
+                    z, lp_per_class = net(
+                        noised.cuda(), fixed=dict(y=None, sum_dims=True)
                     )
-                    lp = th.sum(lp_per_dim, dim=-1)
-                    lps = to_numpy(th.sum(lp * y_th, dim=1) - noise_log_prob.cuda())
+                    lps = to_numpy(th.sum(lp_per_class * y_th, dim=1) - noise_log_prob.cuda())
+                    crop_lp_per_class.append(lp_per_class.detach().cpu())
                     crop_lps.append(lps)
-                    crop_lp_per_dims.append(lp_per_dim.cpu())
 
+                lp_per_class = th.stack(crop_lp_per_class).mean(dim=0)
                 lps = np.mean(np.stack(crop_lps), axis=0)
-                lp_per_dim = th.stack(crop_lp_per_dims).mean(dim=0)
                 all_lps.extend(lps)
-                if class_prob_masked:
-                    mask = th.sigmoid(net.alphas)
-                    lp_for_c = th.sum(
-                        mask.unsqueeze(0).unsqueeze(0).cpu() * lp_per_dim, dim=-1
-                    )
-                else:
-                    lp_for_c = th.sum(lp_per_dim, dim=-1)
-                corrects = to_numpy(y.cpu() == lp_for_c.argmax(dim=1))
+                corrects = to_numpy(y.cpu() == lp_per_class.argmax(dim=1))
                 all_corrects.extend(corrects)
         acc = np.mean(all_corrects)
         nll = -(np.mean(all_lps) / (n_real_chans * n_times_crop * np.log(2)))

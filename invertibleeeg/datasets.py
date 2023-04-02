@@ -10,6 +10,8 @@ from braindecode.preprocessing import scale
 from braindecode.preprocessing.windowers import create_fixed_length_windows
 from braindecode.preprocessing.windowers import create_windows_from_events
 from torch.utils.data import Subset
+import logging
+log = logging.getLogger(__name__)
 
 
 def load_and_preproc_bcic_iv_2a(
@@ -523,24 +525,30 @@ def split_hgd_train_valid_test(
     return train_set, valid_set, test_set
 
 
-def load_tuh_abnormal():
-    n_recordings_to_load = 300
+def load_tuh_abnormal(n_recordings_to_load):
     n_max_minutes = 3
     sfreq = 64
     n_minutes = 2
-
+    log.info("Load TUH train data...")
     # atm window stride determined automatically as n_preds_per_input, could also parametrize it
 
     data_path = "/data/datasets/TUH/EEG/tuh_eeg_abnormal/v2.0.0/edf/train/"
+    if n_recordings_to_load:
+        recording_ids = range(
+            n_recordings_to_load
+        )
+    else:
+        recording_ids = None
+
     train_set = TUHAbnormal(
         path=data_path,
-        recording_ids=range(
-            n_recordings_to_load
-        ),  # loads the n chronologically first recordings
+         recording_ids=recording_ids,  #   loads the n chronologically first recordings
         target_name="pathological",  # age, gender, pathology
         preload=False,
         add_physician_reports=False,
     )
+
+    log.info("Load TUH test data...")
     data_path = "/data/datasets/TUH/EEG/tuh_eeg_abnormal/v2.0.0/edf/eval/"
     test_set = TUHAbnormal(
         path=data_path,
@@ -550,6 +558,7 @@ def load_tuh_abnormal():
     )
     complete_set = BaseConcatDataset([train_set, test_set])
 
+    log.info("Preprocess Data..")
     ar_ch_names = sorted(
         [
             "EEG A1-REF",
@@ -577,12 +586,12 @@ def load_tuh_abnormal():
     )
 
     preprocessors = [
-        Preprocessor(fn="pick_channels", ch_names=ar_ch_names, ordered=True),
         Preprocessor("crop", tmin=0, tmax=n_max_minutes * 60, include_tmax=True),
-        Preprocessor(fn=lambda x: np.clip(x, -800, 800), apply_on_array=True),
-        Preprocessor("set_eeg_reference", ref_channels="average"),
+        Preprocessor(fn="pick_channels", ch_names=ar_ch_names, ordered=True),
         # convert from volt to microvolt, directly modifying the numpy array
         Preprocessor(fn=lambda x: x * 1e6, apply_on_array=True),
+        Preprocessor(fn=lambda x: np.clip(x, -800, 800), apply_on_array=True),
+        Preprocessor("set_eeg_reference", ref_channels="average"),
         Preprocessor(fn=lambda x: x / 30, apply_on_array=True),  # this seemed best
         Preprocessor(fn="resample", sfreq=sfreq),
         Preprocessor("crop", tmin=1 * 60, tmax=n_max_minutes * 60, include_tmax=False),
@@ -590,6 +599,7 @@ def load_tuh_abnormal():
     # Preprocess the data
     preprocess(complete_set, preprocessors)
 
+    log.info("Window Data..")
     window_set = create_fixed_length_windows(
         complete_set,
         preload=True,
@@ -599,6 +609,7 @@ def load_tuh_abnormal():
     )
     whole_train_set = window_set.split("train")["True"]
 
+    log.info("Split Data..")
     subject_datasets = whole_train_set.split("subject")
     n_subjects = len(subject_datasets)
 

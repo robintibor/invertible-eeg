@@ -1,12 +1,12 @@
 import time
 import traceback
 from copy import deepcopy
+import os.path
 
 import numpy as np
 import torch as th
 
-from invertible.distribution import NClassIndependentDist, ClassWeightedPerDimGaussianMixture, \
-    ClassWeightedGaussianMixture
+from invertible.distribution import NClassIndependentDist
 from invertible.inverse import Inverse
 from invertible.sequential import InvertibleSequential
 from invertibleeeg.experiments.bcic_iv_2a import train_glow
@@ -25,8 +25,6 @@ from invertibleeeg.datasets import (
     load_train_valid_test_bcic_iv_2a,
     load_tuh_abnormal,
 )
-import neps
-import functools
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +59,6 @@ def create_eeg_glow_neps_model(
     dist_name,
     n_mixes,
     eps,
-    affine_or_additive,
 ):
 
     stages = []
@@ -76,7 +73,7 @@ def create_eeg_glow_neps_model(
                 n_chans=n_this_chans,
                 hidden_channels=hidden_channels,
                 kernel_length=kernel_length,
-                affine_or_additive=affine_or_additive,
+                affine_or_additive="affine",
                 scale_fn="twice_sigmoid",
                 dropout=dropout_prob,
                 swap_dims=False,
@@ -115,24 +112,6 @@ def create_eeg_glow_neps_model(
             optimize_mean=True,
             optimize_std=True,
             init_std=init_dist_std,
-        )
-    elif dist_name == "weightedgaussianmix":
-        dist = ClassWeightedGaussianMixture(
-            n_classes=n_classes,
-            n_mixes=32,
-            n_dims=n_dims,
-            init_std=init_dist_std,
-            optimize_mean=True,
-            optimize_std=True,
-        )
-    elif dist_name == "weighteddimgaussianmix":
-        dist = ClassWeightedPerDimGaussianMixture(
-            n_classes=n_classes,
-            n_mixes=32,
-            n_dims=n_dims,
-            init_std=init_dist_std,
-            optimize_mean=True,
-            optimize_std=True,
         )
     else:
         assert dist_name == "nclassindependent"
@@ -181,14 +160,15 @@ def train_and_evaluate_glow(
     n_times_crop,
     n_times_train,
     n_times_eval,
+    n_eval_crops,
     with_tqdm,
 ):
+    assert False, "copy this over to TUH"
 
     noise_factor = 5e-3
     class_prob_masked = False
     nll_loss_factor = 1
     n_virtual_chans = 0
-    n_eval_crops = 3
     np_th_seed = np.random.randint(0, 2**32)
     channel_drop_p = 0
     kernel_length = half_kernel_length * 2 + 1
@@ -291,34 +271,40 @@ def train_and_evaluate_glow(
     )
     results["runtime"] = time.time() - start_time
 
-    neps_results = dict(
-        loss=results["valid_mis"], cost=results["runtime"], info_dict=results
-    )
-    return neps_results
+    return results, model
 
 
 def run_exp(
     debug,
-    neps_output_dir,
-    max_hours,
-    epochs_as_fidelity,
+    output_dir,
     class_names,
     trial_start_offset_sec,
     subject_id,
     split_valid_off_train,
     sfreq,
+    n_eval_crops,
     n_times_train,
     n_times_eval,
+    n_times_crop,
     all_subjects_in_each_fold,
     exponential_standardize,
     low_cut_hz,
     high_cut_hz,
     hgd_sensors,
     dataset_name,
-    n_max_epochs,
-    ignore_errors,
     n_tuh_recordings,
-    n_times_crop,
+    n_blocks,
+    n_stages,
+    hidden_channels,
+    half_kernel_length,
+    channel_permutation,
+    dropout_prob,
+    dist_name,
+    n_mixes,
+    start_lr,
+    weight_decay,
+    scheduler,
+    n_epochs,
 ):
     if dataset_name == "bcic_iv_2a":
         train_set, valid_set, test_set = load_train_valid_test_bcic_iv_2a(
@@ -352,51 +338,31 @@ def run_exp(
         )
     n_chans = train_set[0][0].shape[0]
     n_classes = len(class_names)
-    pipeline_space = dict(
-        n_blocks=neps.IntegerParameter(lower=0, upper=8),
-        n_stages=neps.IntegerParameter(lower=0, upper=4),
-        hidden_channels=neps.IntegerParameter(lower=8, upper=512, log=True),
-        half_kernel_length=neps.IntegerParameter(
-            lower=0,
-            upper=15,
-        ),
-        channel_permutation=neps.CategoricalParameter(
-            choices=["shuffle", "linear", "none"]
-        ),
-        dropout_prob=neps.FloatParameter(lower=0, upper=1),
-        start_lr=neps.FloatParameter(lower=1e-5, upper=1, log=True),
-        weight_decay=neps.FloatParameter(lower=1e-5, upper=1e-2, log=True),
-        dist_name=neps.CategoricalParameter(
-            choices=["maskedmix", "perdimweightedmix", "nclassindependent"]
-        ),
-        n_mixes=neps.IntegerParameter(lower=1, upper=16),
-        scheduler=neps.CategoricalParameter(
-            choices=["identity", "cosine", "cosine_with_warmup"]
-        ),
-    )
-    if epochs_as_fidelity:
-        pipeline_space["n_epochs"] = neps.IntegerParameter(
-            lower=2, upper=n_max_epochs, is_fidelity=True
-        )
-    else:
-        pipeline_space["n_epochs"] = neps.CategoricalParameter(choices=[n_max_epochs])
 
-    neps.run(
-        run_pipeline=functools.partial(
-            train_and_evaluate_glow,
-            train_set=train_set,
-            valid_set=valid_set,
-            test_set=test_set,
-            n_chans=n_chans,
-            n_classes=n_classes,
-            n_times_crop=n_times_crop,
-            n_times_train=n_times_train,
-            n_times_eval=n_times_eval,
-            with_tqdm=False,
-        ),
-        pipeline_space=pipeline_space,
-        root_directory=neps_output_dir,
-        max_cost_total=max_hours * 3600,
-        ignore_errors=ignore_errors,
+    results, model = train_and_evaluate_glow(
+        n_blocks=n_blocks,
+        n_stages=n_stages,
+        hidden_channels=hidden_channels,
+        half_kernel_length=half_kernel_length,
+        channel_permutation=channel_permutation,
+        dropout_prob=dropout_prob,
+        dist_name=dist_name,
+        n_mixes=n_mixes,
+        start_lr=start_lr,
+        weight_decay=weight_decay,
+        scheduler=scheduler,
+        n_epochs=n_epochs,
+        train_set=train_set,
+        valid_set=valid_set,
+        test_set=test_set,
+        n_chans=n_chans,
+        n_classes=n_classes,
+        n_times_crop=n_times_crop,
+        n_times_train=n_times_train,
+        n_times_eval=n_times_eval,
+        n_eval_crops=n_eval_crops,
+        with_tqdm=False,
     )
-    return {}
+    th.save(model, os.path.join(output_dir, "model.th"))
+    th.save(model.state_dict(), os.path.join(output_dir, "model_state_dict.th"))
+    return results

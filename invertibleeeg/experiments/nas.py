@@ -27,7 +27,7 @@ from invertible.coupling import CouplingLayer
 from invertible.distribution import (
     PerDimWeightedMix,
     NClassIndependentDist,
-    MaskedMixDist,
+    MaskedMixDist, ClassWeightedGaussianMixture, ClassWeightedPerDimGaussianMixture,
 )
 from invertible.expression import Expression
 from invertible.graph import Node
@@ -40,7 +40,8 @@ from invertible.split_merge import EverySecondChan
 from invertible.view_as import Flatten2d
 from invertibleeeg.datasets import (
     load_train_valid_test_bcic_iv_2a,
-    load_train_valid_test_hgd, load_tuh_abnormal,
+    load_train_valid_test_hgd,
+    load_tuh_abnormal,
 )
 from invertibleeeg.experiments.bcic_iv_2a import train_glow
 from invertibleeeg.models.glow import get_splitter
@@ -311,6 +312,7 @@ def coupling_block(
     multiply_by_zeros=True,
     channel_permutation="none",
     fraction_unchanged=0.5,
+    eps=0,
 ):
     n_unchanged = int(np.round(n_chans * fraction_unchanged))
     n_changed = n_chans - n_unchanged
@@ -366,7 +368,7 @@ def coupling_block(
                 post_hoc_coefs,
             )
         ),
-        AffineModifier(scale_fn, add_first=True, eps=0),
+        AffineModifier(scale_fn, add_first=True, eps=eps),
     )
     if channel_permutation == "linear":
         permuter = InvPermute(n_chans, fixed=False, use_lu=True, init_identity=False)
@@ -448,10 +450,11 @@ def inv_permute(n_chans, use_lu=True):
     return permuter
 
 
-def act_norm(n_chans, scale_fn):
+def act_norm(n_chans, scale_fn, eps=1e-8):
     return ActNorm(
         n_chans,
         scale_fn,
+        eps=eps,
     )
 
 
@@ -565,6 +568,13 @@ def get_downsample_anywhere_blocks(included_blocks):
                     ],
                     # choices=[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
                 ),
+                CSH.CategoricalHyperparameter(
+                    "eps",
+                    choices=[
+                        1e-2,
+                    ],
+                    # choices=[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
+                ),
             ],
             "chans_after": lambda x: x,
             "position": "any",
@@ -585,6 +595,13 @@ def get_downsample_anywhere_blocks(included_blocks):
             "params": [
                 CSH.CategoricalHyperparameter(
                     "scale_fn", choices=["twice_sigmoid", "exp"]
+                ),
+                CSH.CategoricalHyperparameter(
+                    "eps",
+                    choices=[
+                        1e-2,
+                    ],
+                    # choices=[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
                 ),
             ],
             "chans_after": lambda x: x,
@@ -616,95 +633,6 @@ def get_downsample_anywhere_blocks(included_blocks):
     return wanted_blocks
 
 
-def get_blocks():
-    assert False
-    blocks = {
-        # "conv_flow_block_nas": {
-        #     "func": conv_flow_block_nas,
-        #     "params": [
-        #         CSH.CategoricalHyperparameter(
-        #             "affine_or_additive", choices=["affine", "additive"]
-        #         ),
-        #         CSH.CategoricalHyperparameter(
-        #             "hidden_channels", choices=[8, 16, 32, 64, 128, 256]
-        #         ),
-        #         CSH.CategoricalHyperparameter(
-        #             "kernel_length", choices=[3, 5, 7, 9, 11, 13, 15]
-        #         ),
-        #         CSH.CategoricalHyperparameter(
-        #             "scale_fn", choices=["twice_sigmoid", "exp"]
-        #         ),
-        #         CSH.CategoricalHyperparameter("permute", choices=[True, False]),
-        #         CSH.CategoricalHyperparameter("dropout", choices=[0, 0.2, 0.5]),
-        #     ],
-        #     "chans_after": lambda x: x,
-        #     "position": "any",
-        # },
-        "coupling_block": {
-            "func": coupling_block,
-            "params": [
-                CSH.CategoricalHyperparameter(
-                    "affine_or_additive",
-                    choices=["affine", "additive"],
-                ),
-                CSH.CategoricalHyperparameter(
-                    "hidden_channels",
-                    choices=[8, 16, 32, 64, 128, 256],
-                ),
-                CSH.CategoricalHyperparameter(
-                    "kernel_length",
-                    choices=[3, 5, 7, 9, 11, 13, 15],
-                ),
-                CSH.CategoricalHyperparameter(
-                    "scale_fn", choices=["twice_sigmoid", "exp"]
-                ),
-                CSH.CategoricalHyperparameter("nonlin", choices=["elu"]),
-                CSH.CategoricalHyperparameter("dropout", choices=[0, 0.2, 0.5]),
-                CSH.CategoricalHyperparameter(
-                    "swap_dims",
-                    choices=[True, False],
-                ),
-                CSH.CategoricalHyperparameter(
-                    "norm",
-                    choices=["none", "bnorm"],
-                ),
-            ],
-            "chans_after": lambda x: x,
-            "position": "any",
-        },
-        "permute": {
-            "func": inv_permute,
-            "params": [],
-            "chans_after": lambda x: x,
-            "position": "any",
-        },
-        "act_norm": {
-            "func": act_norm,
-            "params": [
-                CSH.CategoricalHyperparameter(
-                    "scale_fn", choices=["twice_sigmoid", "exp"]
-                ),
-            ],
-            "chans_after": lambda x: x,
-            "position": "any",
-        },
-        "splitter": {
-            "func": ignore_n_chans(get_splitter),
-            "params": [
-                CSH.CategoricalHyperparameter(
-                    "splitter_name", choices=["haar", "subsample"]
-                ),
-                CSH.CategoricalHyperparameter(
-                    "chunk_chans_first", choices=[True, False]
-                ),
-            ],
-            "chans_after": lambda x: x * 2,
-            "position": "end",
-        },
-    }
-    return blocks
-
-
 def init_model_encoding(
     amplitude_phase_at_end,
     n_times,
@@ -716,8 +644,9 @@ def init_model_encoding(
     n_virtual_chans,
     linear_glow_clf,
     n_real_chans,
+    n_classes,
+    dist_lr,
 ):
-    n_classes = 4
     init_dist_std = 0.1
     n_mixes = 8
     n_chans = n_real_chans + n_virtual_chans
@@ -766,6 +695,26 @@ def init_model_encoding(
                 optimize_std=True,
             ),
         ),
+        "weightedgaussianmix": functools.partial(
+            ClassWeightedGaussianMixture,
+            n_classes=n_classes,
+            n_mixes=32,
+            n_dims=n_dims,
+            init_std=init_dist_std,
+            optimize_mean=True,
+            optimize_std=True,
+        ),
+        # for debugging
+        "weighteddimgaussianmix":functools.partial(
+            ClassWeightedPerDimGaussianMixture,
+            n_classes=n_classes,
+            n_mixes=32,
+            n_dims=n_dims,
+            init_std=init_dist_std,
+            optimize_mean=True,
+            optimize_std=True,
+        ),
+
     }
 
     wanted_dist_module = rng.choice(dist_module_choices)
@@ -781,18 +730,18 @@ def init_model_encoding(
 
     net = dist_node
 
+    net = net.cuda()
     init_all_modules(net, None)
     # Now also add optim params
     net_encoding["optim_params_per_param"] = {}
     for p in net.parameters():
-        net_encoding["optim_params_per_param"][p] = dict(lr=1e-3, weight_decay=5e-5)
+        net_encoding["optim_params_per_param"][p] = dict(lr=dist_lr, weight_decay=5e-5)
         if hasattr(dist, "alphas"):
             net_encoding["optim_params_per_param"][dist.alphas] = dict(
                 lr=alpha_lr, weight_decay=5e-5
             )
         else:
             assert not wanted_dist_module == "masked_mix"
-    net = net.cuda()
     if class_prob_masked:
         net.alphas = nn.Parameter(
             th.zeros(n_chans * n_times, device="cuda", requires_grad=True)
@@ -916,11 +865,18 @@ def run_exp(
     min_n_downsample,
     hgd_sensors,
     min_improve_fraction,
+    n_tuh_recordings,
+    dist_lr,
+    n_virtual_classes,
 ):
     noise_factor = 5e-3
     start_time = time.time()
 
     n_classes = len(class_names)
+    if dataset_name == "tuh":
+        n_classes = 2
+    n_classes = n_classes + n_virtual_classes
+
     # maybe specifiy via hparam to ensure you know of the change class_names = ["left_hand", "right_hand", "feet", "tongue"]
 
     set_random_seeds(np_th_seed, True)
@@ -937,8 +893,10 @@ def run_exp(
             high_cut_hz=high_cut_hz,
             exponential_standardize=exponential_standardize,
         )
-    elif dataset_name == 'tuh':
-        train_set, valid_set, test_set = load_tuh_abnormal()
+    elif dataset_name == "tuh":
+        train_set, valid_set, test_set = load_tuh_abnormal(
+            n_recordings_to_load=n_tuh_recordings
+        )
     else:
         assert dataset_name == "hgd"
         train_set, valid_set, test_set = load_train_valid_test_hgd(
@@ -961,7 +919,6 @@ def run_exp(
         max_n_downsample = min(max_n_downsample, limit_n_downsample)
     block_fn = dict(
         simpleflow=partial(get_simpleflow_blocks, include_splitter=include_splitter),
-        default=get_blocks,
         downsample_anywhere=partial(
             get_downsample_anywhere_blocks, included_blocks=included_blocks
         ),
@@ -977,13 +934,11 @@ def run_exp(
         def wrap_run_exp():
             csv_file = os.path.join(worker_folder, "population.csv")
             csv_lock_file = csv_file + ".lock"
-            csv_file_lock = fasteners.InterProcessLock(csv_lock_file)
-            csv_file_lock.acquire()
-            try:
-                population_df = pd.read_csv(csv_file, index_col="pop_id")
-            except FileNotFoundError:
-                population_df = None
-            csv_file_lock.release()
+            with fasteners.InterProcessLock(csv_lock_file):
+                try:
+                    population_df = pd.read_csv(csv_file, index_col="pop_id")
+                except FileNotFoundError:
+                    population_df = None
             if population_df is not None and len(population_df) >= n_start_population:
                 # grab randomly one among top n_population
                 # change it, with chance of no change as well
@@ -1060,6 +1015,8 @@ def run_exp(
                     n_virtual_chans=n_virtual_chans,
                     linear_glow_clf=linear_glow_clf,
                     n_real_chans=n_real_chans,
+                    n_classes=n_classes,
+                    dist_lr=dist_lr,
                 )
                 last_metric_val = np.inf
                 model_to_train = encoding["node"].cuda()
@@ -1160,7 +1117,7 @@ def run_exp(
                     encoding_before_last_train["node"].cpu()
                     # also store last results
                     results_before_last_train = results
-                start_train_time = time.time() # Measure only train time
+                start_train_time = time.time()  # Measure only train time
                 results = train_glow(
                     model_to_train,
                     class_prob_masked,
@@ -1189,7 +1146,7 @@ def run_exp(
             # if result was better one training round earlier
             # reset to that
             if (encoding_before_last_train is not None) and (
-              results_before_last_train[search_by] < results[search_by]
+                results_before_last_train[search_by] < results[search_by]
             ):
                 results = results_before_last_train
                 encoding = encoding_before_last_train
@@ -1205,17 +1162,15 @@ def run_exp(
             clean_encoding = copy_clean_encoding_dict(encoding)
             th.save(clean_encoding, os.path.join(output_dir, "encoding_no_params.pth"))
 
-            csv_file_lock = fasteners.InterProcessLock(csv_lock_file)
-            csv_file_lock.acquire()
-            try:
-                population_df = pd.read_csv(csv_file, index_col="pop_id")
-            except FileNotFoundError:
-                population_df = pd.DataFrame()
+            with fasteners.InterProcessLock(csv_lock_file):
+                try:
+                    population_df = pd.read_csv(csv_file, index_col="pop_id")
+                except FileNotFoundError:
+                    population_df = pd.DataFrame()
 
-            this_dict = dict(folder=output_dir, parent_folder=parent_folder, **metrics)
-            population_df = population_df.append(this_dict, ignore_index=True)
-            population_df.to_csv(csv_file, index_label="pop_id")
-            csv_file_lock.release()
+                this_dict = dict(folder=output_dir, parent_folder=parent_folder, **metrics)
+                population_df = population_df.append(this_dict, ignore_index=True)
+                population_df.to_csv(csv_file, index_label="pop_id")
 
             return results
 
