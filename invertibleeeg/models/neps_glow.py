@@ -1,36 +1,32 @@
-import time
-import traceback
-from copy import deepcopy
-import pickle
-
-import numpy as np
-import torch as th
-
 from invertible.distribution import NClassIndependentDist, ClassWeightedPerDimGaussianMixture, \
     ClassWeightedGaussianMixture, ClassWeightedHierachicalGaussianMixture, PerClassHierarchical, \
     SomeClassIndependentDimsDist
 from invertible.distribution import PerClassDists
-from invertible.inverse import Inverse
 from invertible.sequential import InvertibleSequential
-from invertibleeeg.train import train_glow
+from invertible.inverse import Inverse
 from invertibleeeg.experiments.nas import (
     coupling_block,
     inv_permute,
     act_norm,
-    try_run_backward,
-    try_run_forward,
 )
-from invertibleeeg.models.cropped import CroppedGlow
 from invertibleeeg.models.glow import get_splitter
-import logging
-from invertibleeeg.datasets import (
-    load_train_valid_test_hgd,
-    load_train_valid_test_bcic_iv_2a,
-    load_tuh_abnormal,
-)
-import neps
-import functools
-import invertibleeeg.models.conv
+
+def wrap_downsample(block, n_downsample, splitter_name):
+    splitter_seq = InvertibleSequential(
+        *[
+            # do not chunk chans first for first downsampling
+            # otherwise network only sees half of EEG channels
+            get_splitter(
+                splitter_name=splitter_name, chunk_chans_first=(i_downsample > 0)
+            )
+            for i_downsample in range(n_downsample)
+        ]
+    )
+    block = InvertibleSequential(
+        splitter_seq, block, Inverse(splitter_seq, invert_logdet_sign=True)
+    )
+    return block
+
 
 def create_eeg_glow_neps_model(
     n_chans,
