@@ -16,8 +16,6 @@ import pandas as pd
 import torch as th
 from black import format_str, FileMode
 from braindecode.util import set_random_seeds
-from hyperoptim.concurrent_file_observer import ConcurrentFileStorageObserver
-from sacred.experiment import Experiment
 from torch import nn
 
 from invertible.actnorm import ActNorm
@@ -925,6 +923,8 @@ def run_exp(
     init_dist_mean_std,
     init_dist_std_std,
 ):
+    from hyperoptim.concurrent_file_observer import ConcurrentFileStorageObserver
+    from sacred.experiment import Experiment
     noise_factor = 5e-3
     start_time = time.time()
 
