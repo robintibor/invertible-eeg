@@ -2,10 +2,12 @@ import time
 from copy import deepcopy
 import traceback
 import gc
+from torch import nn
 
 from braindecode.datasets import BaseConcatDataset
 
-from invertibleeeg.experiments.bcic_iv_2a import train_glow
+from invertibleeeg.models.remove_high_freq import RemoveHighFreq
+from invertibleeeg.train import train_glow
 from invertibleeeg.models.cropped import CroppedGlow
 
 from invertible.gaussian import get_gaussian_log_probs
@@ -51,6 +53,21 @@ def run_exp(
     dist_name,
     affine_or_additive,
     n_times_train_eval,
+    n_mixes,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
+    init_dist_weight_std,
+    init_dist_mean_std,
+    init_dist_std_std,
+    nll_loss_factor,
+    temperature_init,
+    optimize_std,
+    n_class_independent_dims,
+    first_conv_class_name,
+    high_cut_hz,
+    lowpass_for_model,
 ):
     n_classes = 2
     half_kernel_length = 5
@@ -59,7 +76,6 @@ def run_exp(
     dropout_prob = 0.5
     start_lr = 5e-4
     weight_decay = 5e-5
-    n_mixes = 8
     scheduler = "cosine_with_warmup"
     n_times_crop = 128
     n_times_train = n_times_train_eval
@@ -70,7 +86,6 @@ def run_exp(
 
     noise_factor = 5e-3
     class_prob_masked = False
-    nll_loss_factor = 1
     n_virtual_chans = 0
     n_eval_crops = 3
     channel_drop_p = 0
@@ -86,10 +101,22 @@ def run_exp(
     train_set = datasets["train"]
     valid_set = datasets["valid"]
     test_set = datasets["test"]
+
+    def clip_and_lowpass(x, in_clip_val, high_cut_hz):
+        if in_clip_val is not None:
+            x = np.clip(x, a_min=-in_clip_val, a_max=in_clip_val)
+        if high_cut_hz is not None:
+            i_stop = np.searchsorted(np.fft.rfftfreq(x.shape[1], 1 / 64.0), high_cut_hz)
+            a_th = th.tensor(x.astype(np.float32), device='cuda')
+            with th.no_grad():
+                ffted = th.fft.rfft(a_th)
+                ffted[:, i_stop:] = 0
+                x = th.fft.irfft(ffted)
+        return x
     if in_clip_val is not None:
-        train_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
-        valid_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
-        test_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+        train_set.transform = partial(clip_and_lowpass, in_clip_val=in_clip_val, high_cut_hz=high_cut_hz)
+        valid_set.transform =  partial(clip_and_lowpass, in_clip_val=in_clip_val, high_cut_hz=high_cut_hz)
+        test_set.transform =  partial(clip_and_lowpass, in_clip_val=in_clip_val, high_cut_hz=high_cut_hz)
 
     if debug:
         n_epochs = 2  # need at least two in case warmup is specified
@@ -119,12 +146,29 @@ def run_exp(
             n_mixes,
             eps,
             affine_or_additive=affine_or_additive,
+            n_overall_mixes=n_overall_mixes,
+            n_dim_mixes=n_dim_mixes,
+            reduce_per_dim=reduce_per_dim,
+            reduce_overall_mix=reduce_overall_mix,
+            init_dist_weight_std=init_dist_weight_std,
+            init_dist_mean_std=init_dist_mean_std,
+            init_dist_std_std=init_dist_std_std,
+            optimize_std=optimize_std,
+            n_class_independent_dims=n_class_independent_dims,
+            first_conv_class_name=first_conv_class_name,
         )
 
         cropped_model = CroppedGlow(model, n_times_crop)
+        if lowpass_for_model and (high_cut_hz is not None):
+            dist = cropped_model.dist
+            cropped_model = InvertibleSequential(RemoveHighFreq(high_cut_hz=high_cut_hz), cropped_model)
+            cropped_model.dist = dist
+        if temperature_init is not None:
+            cropped_model.temperature = nn.Parameter(th.tensor(np.log(temperature_init), device='cuda'))
     else:
         assert saved_model_folder is not None
         cropped_model = th.load(os.path.join(saved_model_folder, "net.th"))
+
     batch_size = 256
     model_worked = False
     while not model_worked:
@@ -201,6 +245,7 @@ def run_exp(
             channel_drop_p=channel_drop_p,
             n_times_crop=n_times_crop,
             n_eval_crops=n_eval_crops,
+            use_temperature=hasattr(cropped_model, 'temperature'),
         )
         print(results)
 
@@ -277,149 +322,5 @@ def run_exp(
     th.save(net, os.path.join(output_dir, "net.th"))
     # th.save(net.state_dict(), os.path.join(output_dir, "net_state_dict.th"))
 
-    class_names = ["healthy", "pathological"]
-
-    # Modify for visualization
-    net.mods_until_flat.sequential[0].next = []
-
-    net = InvertibleSequential(net.mods_until_flat, net.flat_module, net.dist)
-    net.module = net.sequential[-1]
-    n_epochs_visualization = 500
-    with th.no_grad():
-
-        X = th.zeros(1, n_chans, n_times_crop)
-        X = X.cuda()
-        z_zero = net(X.cuda() * 0)[0]
-    cross_ent_weight_to_in = {}
-    for cross_ent_weight in [1]:  # 100
-        print(f"Cross entropy weight {cross_ent_weight}")
-        z_class_specific = z_zero.repeat(2, 1).clone().detach_().requires_grad_()
-        # z_class_specific = per_class_means.clone().detach_().requires_grad_()
-        # z_class_specific = (0.75 * z_zero.repeat(4,1) + 0.25 * per_class_means).clone().detach_().requires_grad_()
-        lr = 1e-1
-        optim = th.optim.AdamW([z_class_specific], lr=lr, weight_decay=0)
-        scheduler = th.optim.lr_scheduler.LambdaLR(
-            optim, lr_lambda=lambda i_step: min(1, (10 * i_step) / (n_epochs))
-        )
-        assert not hasattr(net, "alphas")
-        for i_epoch in range(n_epochs_visualization):
-            if i_epoch > 0:
-                inved, lp_per_class = net.invert(z_class_specific)
-                lp_per_class = net(inved + th.randn_like(inved) * noise_factor)[1]
-                lp_wanted_class = th.diag(lp_per_class)
-                _, lp_z_per_class = net.module(
-                    z_class_specific, fixed=dict(y=None, sum_dims=True)
-                )
-                cross_ent_per_example = th.nn.functional.cross_entropy(
-                    lp_z_per_class,
-                    th.tensor([0, 1], device="cuda"),
-                    reduction="none",
-                )
-                cross_ent = th.mean(cross_ent_per_example)
-                # only optimize nll where class already correct
-                correct_mask = th.argmax(lp_z_per_class.squeeze(), dim=-1) == th.tensor(
-                    [0, 1], device="cuda"
-                )
-
-                nll = -th.mean(lp_wanted_class * correct_mask.detach())
-                bpd = (nll) / (
-                    np.prod(inved.shape[1:]) * (n_real_chans / n_chans) * np.log(2)
-                )
-                loss = (1 / (cross_ent_weight + 1)) * bpd + (
-                    cross_ent_weight / (cross_ent_weight + 1)
-                ) * cross_ent
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
-                optim.zero_grad()
-                scheduler.step()
-
-        in_specific = to_numpy(net.invert(z_class_specific)[0][:].squeeze())
-        cross_ent_weight_to_in[cross_ent_weight] = in_specific
-        seaborn.set_palette("colorblind")
-        seaborn.set_style("darkgrid")
-
-        tight_tuh_positions = [
-            ["", "", "FP1", "", "FP2", "", ""],
-            [
-                "",
-                "F7",
-                "F3",
-                "FZ",
-                "F4",
-                "F8",
-                "",
-            ],
-            ["A1", "T3", "C3", "CZ", "C4", "T4", "A2"],
-            ["", "T5", "P3", "Pz", "P4", "T6", ""],
-            ["", "", "O1", "", "O2", "", ""],
-        ]
-        last_sensor_name = "O2"
-        tight_positions = tight_tuh_positions
-
-        ch_names = [
-            "A1",
-            "A2",
-            "C3",
-            "C4",
-            "CZ",
-            "F3",
-            "F4",
-            "F7",
-            "F8",
-            "FP1",
-            "FP2",
-            "FZ",
-            "O1",
-            "O2",
-            "P3",
-            "P4",
-            "PZ",
-            "T3",
-            "T4",
-            "T5",
-            "T6",
-        ]
-
-        for cross_ent_weight in cross_ent_weight_to_in:
-            in_specific = cross_ent_weight_to_in[cross_ent_weight]
-            fig = plot_head_signals_tight(
-                in_specific.transpose(1, 2, 0) * 30,
-                sensor_names=ch_names,
-                plot_args=dict(alpha=0.7),
-                figsize=(20, 12),
-                sharex=False,
-                sharey=False,
-                sensor_map=tight_positions,
-            )
-
-            last_ax = [
-                ax for ax in fig.get_axes() if ax.get_title() == last_sensor_name
-            ][0]
-            last_ax.set_xlabel("Time [ms]")
-            for ax in fig.get_axes():
-                ax.set_xticks(range(0, 129, 16))
-                ax.set_xticklabels([])
-            last_ax.set_xticklabels(
-                (np.arange(0, 129, 16) * 1000 / 64).astype(np.int32),
-                rotation=45,
-                fontsize=12,
-            )
-            last_ax.set_ylabel("Amplitude [μV]")
-            fig.suptitle("Per-Class Maximum Input", fontsize=22)
-            abs_max = np.ceil(np.abs(in_specific * 30).max() * 1.2)
-            ymin, ymax = -abs_max, +abs_max
-            for ax in fig.get_axes():
-                ax.set_ylim(ymin, ymax)
-            for ax in fig.get_axes():
-                ax.yaxis.set_major_locator(AutoLocator())
-                if ax.get_title() != last_sensor_name:
-                    ax.set_yticklabels([])
-
-            last_ax.legend(class_names, bbox_to_anchor=[1, 0.0, 1, 1])
-
-    plt.savefig(
-        os.path.join(output_dir, "class-prototypes.png"), bbox_inches="tight", dpi=300
-    )
 
     return results

@@ -1,15 +1,18 @@
 import time
 import traceback
 from copy import deepcopy
+import pickle
 
 import numpy as np
 import torch as th
 
 from invertible.distribution import NClassIndependentDist, ClassWeightedPerDimGaussianMixture, \
-    ClassWeightedGaussianMixture
+    ClassWeightedGaussianMixture, ClassWeightedHierachicalGaussianMixture, PerClassHierarchical, \
+    SomeClassIndependentDimsDist
+from invertible.distribution import PerClassDists
 from invertible.inverse import Inverse
 from invertible.sequential import InvertibleSequential
-from invertibleeeg.experiments.bcic_iv_2a import train_glow
+from invertibleeeg.train import train_glow
 from invertibleeeg.experiments.nas import (
     coupling_block,
     inv_permute,
@@ -27,6 +30,7 @@ from invertibleeeg.datasets import (
 )
 import neps
 import functools
+import invertibleeeg.models.conv
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +66,16 @@ def create_eeg_glow_neps_model(
     n_mixes,
     eps,
     affine_or_additive,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
+    init_dist_weight_std,
+    init_dist_mean_std,
+    init_dist_std_std,
+    optimize_std,
+    n_class_independent_dims,
+    first_conv_class_name,
 ):
 
     stages = []
@@ -86,6 +100,7 @@ def create_eeg_glow_neps_model(
                 channel_permutation=channel_permutation,
                 fraction_unchanged=0.5,
                 eps=eps,
+                first_conv_class_name=first_conv_class_name,
             )
             blocks.extend([a_block, p_block, c_block])
         stage = wrap_downsample(InvertibleSequential(*blocks), n_downsample, "haar")
@@ -103,7 +118,7 @@ def create_eeg_glow_neps_model(
                 n_mixes=n_mixes,
                 n_dims=n_dims,
                 optimize_mean=True,
-                optimize_std=True,
+                optimize_std=optimize_std,
                 init_std=init_dist_std,
             ),
         )
@@ -113,26 +128,84 @@ def create_eeg_glow_neps_model(
             n_mixes=n_mixes,
             n_dims=n_dims,
             optimize_mean=True,
-            optimize_std=True,
+            optimize_std=optimize_std,
             init_std=init_dist_std,
         )
     elif dist_name == "weightedgaussianmix":
         dist = ClassWeightedGaussianMixture(
             n_classes=n_classes,
-            n_mixes=32,
+            n_mixes=n_mixes,
             n_dims=n_dims,
             init_std=init_dist_std,
             optimize_mean=True,
-            optimize_std=True,
+            optimize_std=optimize_std,
         )
     elif dist_name == "weighteddimgaussianmix":
         dist = ClassWeightedPerDimGaussianMixture(
             n_classes=n_classes,
-            n_mixes=32,
+            n_mixes=n_mixes,
             n_dims=n_dims,
             init_std=init_dist_std,
             optimize_mean=True,
-            optimize_std=True,
+            optimize_std=optimize_std,
+        )
+    elif dist_name == "maskedweighteddimmmix":
+        dist = MaskedMixDist(
+            n_dims=n_dims,
+            dist=ClassWeightedPerDimGaussianMixture(
+                n_classes=n_classes,
+                n_mixes=n_mixes,
+                n_dims=n_dims,
+                init_std=init_dist_std,
+                optimize_mean=True,
+                optimize_std=optimize_std,
+            ),
+        )
+    elif dist_name == 'hierarchical':
+        dist = ClassWeightedHierachicalGaussianMixture(
+            n_classes=n_classes,
+            n_overall_mixes=n_overall_mixes,
+            n_dim_mixes=n_dim_mixes,
+            n_dims=n_dims,
+            reduce_per_dim=reduce_per_dim,
+            reduce_overall_mix=reduce_overall_mix,
+            optimize_mean=True,
+            optimize_std=optimize_std,
+            init_weight_std=init_dist_weight_std,
+            init_mean_std=init_dist_mean_std,
+            init_std_std=init_dist_std_std,
+        )
+    elif dist_name == "perclasshierarchical":
+       dist = PerClassHierarchical(
+            n_classes=n_classes,
+            n_overall_mixes=n_overall_mixes,
+            n_dim_mixes=n_dim_mixes,
+            n_dims=n_dims,
+            reduce_per_dim=reduce_per_dim,
+            reduce_overall_mix=reduce_overall_mix,
+            init_weight_std=init_dist_weight_std,
+            init_mean_std=init_dist_mean_std,
+            init_std_std=init_dist_std_std,
+            optimize_mean=True,
+            optimize_std=optimize_std,
+        )
+    elif dist_name == "perclassgaussianmix":
+        dist = PerClassDists([
+            ClassWeightedGaussianMixture(
+            n_classes=1,
+            n_mixes=n_mixes,
+            n_dims=n_dims,
+            init_std=init_dist_std,
+            optimize_mean=True,
+            optimize_std=optimize_std,
+            )
+        for _ in range(n_classes)])
+    elif dist_name == "someindependentdims":
+        dist = SomeClassIndependentDimsDist(
+            n_classes=n_classes,
+            n_dims=n_dims,
+            n_class_independent_dims=n_class_independent_dims,
+            optimize_std=optimize_std,
         )
     else:
         assert dist_name == "nclassindependent"
@@ -140,7 +213,7 @@ def create_eeg_glow_neps_model(
             n_classes=n_classes,
             n_dims=n_dims,
             optimize_mean=True,
-            optimize_std=True,
+            optimize_std=optimize_std,
         )
 
     from invertible.graph import Node
@@ -181,6 +254,11 @@ def train_and_evaluate_glow(
     n_times_crop,
     n_times_train,
     n_times_eval,
+    affine_or_additive,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
     with_tqdm,
 ):
 
@@ -211,6 +289,11 @@ def train_and_evaluate_glow(
         dist_name,
         n_mixes,
         eps,
+        affine_or_additive=affine_or_additive,
+        n_overall_mixes=n_overall_mixes,
+        n_dim_mixes=n_dim_mixes,
+        reduce_per_dim=reduce_per_dim,
+        reduce_overall_mix=reduce_overall_mix,
     )
     cropped_model = CroppedGlow(model, n_times_crop)
     batch_size = 256
@@ -333,9 +416,31 @@ def run_exp(
             exponential_standardize=exponential_standardize,
         )
     elif dataset_name == "tuh":
-        train_set, valid_set, test_set = load_tuh_abnormal(
-            n_recordings_to_load=n_tuh_recordings
+
+        #train_set, valid_set, test_set = load_tuh_abnormal(
+        #    n_recordings_to_load=n_tuh_recordings
+        #)
+        log.info("Load TUH data from pickle...")
+        datasets = pickle.load(
+            open(
+                "/work/dlclarge1/schirrmr-renormalized-flows/tuh_train_valid_test_64_hz_clipped.pkl",
+                "rb",
+            )
         )
+        log.info("Done.")
+        train_set = datasets["train"]
+        valid_set = datasets["valid"]
+        test_set = datasets["test"]
+        # if in_clip_val is not None:
+        #     train_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+        #     valid_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+        #     test_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+
+        if n_tuh_recordings is not None:
+            train_set = th.utils.data.Subset(train_set, range(n_tuh_recordings))
+            valid_set = th.utils.data.Subset(valid_set, range(n_tuh_recordings))
+            test_set = th.utils.data.Subset(test_set, range(n_tuh_recordings))
+
     else:
         assert dataset_name == "hgd"
         train_set, valid_set, test_set = load_train_valid_test_hgd(
@@ -367,11 +472,22 @@ def run_exp(
         start_lr=neps.FloatParameter(lower=1e-5, upper=1, log=True),
         weight_decay=neps.FloatParameter(lower=1e-5, upper=1e-2, log=True),
         dist_name=neps.CategoricalParameter(
-            choices=["maskedmix", "perdimweightedmix", "nclassindependent"]
+            choices=["hierarchical"],  #  ["maskedmix", "perdimweightedmix", "nclassindependent"]
         ),
         n_mixes=neps.IntegerParameter(lower=1, upper=16),
         scheduler=neps.CategoricalParameter(
             choices=["identity", "cosine", "cosine_with_warmup"]
+        ),
+        affine_or_additive=neps.CategoricalParameter(
+            choices=["affine", "additive",]
+        ),
+        n_overall_mixes=neps.IntegerParameter(lower=1, upper=32),
+        n_dim_mixes=neps.IntegerParameter(lower=1, upper=8),
+        reduce_per_dim=neps.CategoricalParameter(
+            choices=["max", "logsumexp"]
+        ),
+        reduce_overall_mix=neps.CategoricalParameter(
+            choices=["max", "logsumexp",]
         ),
     )
     if epochs_as_fidelity:

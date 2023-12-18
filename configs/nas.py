@@ -57,8 +57,8 @@ def get_grid_param_list():
         {
             "subject_id": [[1,2,3,4,5,6,7]],#4
             "all_subjects_in_each_fold": [True],
-            "n_times_train": [144],
-            "n_times_eval": [144],
+            "n_times_train": [128],
+            "n_times_eval": [128],
             "sfreq": [64],#32
             "trial_start_offset_sec": [-0.5],
             "split_valid_off_train": [True],
@@ -113,6 +113,13 @@ def get_grid_param_list():
             "n_virtual_chans": [0],
             "linear_glow_clf": [False],
             "splitter_name": ["subsample"],  # "haar"
+            "n_overall_mixes": [16],
+            "n_dim_mixes": [8],
+            "reduce_per_dim": ["logsumexp"],
+            "reduce_overall_mix": ["logsumexp"],
+            "init_dist_weight_std": [0.1],
+            "init_dist_mean_std": [0.1],
+            "init_dist_std_std": [0.1],
         }
     )
 
@@ -213,20 +220,25 @@ def run(
     n_tuh_recordings,
     dist_lr,
     n_virtual_classes,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
+    init_dist_weight_std,
+    init_dist_mean_std,
+    init_dist_std_std,
 ):
     if debug:
         n_start_population = 2
         n_alive_population = 2
         n_epochs = 2
-        n_tuh_recordings = 300
+        n_tuh_recordings = 260
     kwargs = locals()
     kwargs.pop("ex")
     if not debug:
         log.setLevel("INFO")
     file_obs = ex.observers[0]
     output_dir = file_obs.dir
-    # todo: by default use full subfolder of current exp folder,
-    # and allow specifying the folder if you want to run further
     worker_folder = os.path.join(*os.path.split(output_dir)[:-1], "worker")
     if debug:
         worker_folder = os.path.join(*os.path.split(output_dir)[:-1], "debug-worker")

@@ -42,22 +42,38 @@ def get_grid_param_list():
 
     data_params = dictlistprod({
         "in_clip_val": [7],
+        "high_cut_hz": [0.5],
     })
 
     train_and_model_params = dictlistprod(
         {
-            "dist_name": ["weighteddimgaussianmix", "weightedgaussianmix"],
+            "dist_name": ["nclassindependent"],#["nclassindependent"],#"perclasshierarchical"],#
+            "n_class_independent_dims": [None],#1,2,4,8,16,32,64,128],
             'n_epochs': [25],
-            'n_restarts': [10,40],#[10,20,40],
-            'n_blocks': [4],#[2,4,8],
-            'n_stages': [3],#3,4
+            'n_restarts': [10,40,],#[10,20,40],
+            'n_blocks': [4],#4],#[2,4,8],
+            'n_stages': [3],#3],#3,4
             'saved_model_folder': [None],#'/work/dlclarge1/schirrmr-renormalized-flows/exps/manual/tuh/45']
-            'affine_or_additive': ['additive'],
+            'affine_or_additive': ["additive", "affine",],#, 'affine'],
             "n_times_train_eval": [128],
+            "n_mixes": [64],
+            "n_overall_mixes": [16],
+            "n_dim_mixes": [16],
+            "reduce_per_dim": ["logsumexp"],
+            "reduce_overall_mix": ["logsumexp"],
+            "init_dist_weight_std": [0.1],
+            "init_dist_mean_std": [0.1],
+            "init_dist_std_std": [0.1],
+            "nll_loss_factor": [1],#[1],#1
+            "temperature_init": [200],
+            "optimize_std": [False],
+            "first_conv_class_name": ["conv1d",],#"twostepspatialtemporalconvfixed",
+                                      #"twostepspatialtemporalconvmerged"],#["separate_temporal_channel_conv",],# "twostepspatialtemporalconv"]
+            "lowpass_for_model": [True],
         })
     random_params = dictlistprod(
         {
-            "np_th_seed": range(3),
+            "np_th_seed": range(2),
         }
     )
 
@@ -81,6 +97,21 @@ def run(
     dist_name,
     affine_or_additive,
     n_times_train_eval,
+    n_mixes,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
+    init_dist_weight_std,
+    init_dist_mean_std,
+    init_dist_std_std,
+    nll_loss_factor,
+    temperature_init,
+    optimize_std,
+    n_class_independent_dims,
+    first_conv_class_name,
+    high_cut_hz,
+    lowpass_for_model,
 ):
     kwargs = locals()
     kwargs.pop("ex")

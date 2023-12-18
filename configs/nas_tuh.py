@@ -22,7 +22,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/tuh-abnormal-only-dist-weighted-dim-gaussian-32-mix/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/tuh-abnormal-only-dist-per-class-hierarchical-same-init/"
         },
     ]
 
@@ -30,8 +30,8 @@ def get_grid_param_list():
         {
             "subject_id": [None],  # 4
             "all_subjects_in_each_fold": [True],
-            "n_times_train": [144],
-            "n_times_eval": [144],
+            "n_times_train": [128],
+            "n_times_eval": [128],
             "sfreq": [64],  # 32
             "trial_start_offset_sec": [None],
             "split_valid_off_train": [True],
@@ -71,12 +71,18 @@ def get_grid_param_list():
             # "max_n_deletions": [1],
             "max_n_changes": [0],
             "max_n_deletions": [0],
-            #
             "class_prob_masked": [False],
             "max_hours": [0.5],#2,#0.25,#0.25,
             "mutate_optim_params": [True],
             "n_virtual_classes": [0],
-            "dist_module_choices": [["weighteddimgaussianmix"]],#maskedindependent"perdimweightedmix",
+            "dist_module_choices": [["perclasshierarchical"]],#maskedindependent"perdimweightedmix",
+            "reduce_per_dim": ["logsumexp"],
+            "reduce_overall_mix": ["logsumexp"],
+            "init_dist_weight_std": [0.1],
+            "init_dist_mean_std": [0.1],
+            "init_dist_std_std": [0.1],
+            "n_overall_mixes": [16],
+            "n_dim_mixes": [8],
         },
     )
     grid_params = product_of_list_of_lists_of_dicts(

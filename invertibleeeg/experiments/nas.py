@@ -1,11 +1,12 @@
 import functools
 import logging
 import os.path
+import pickle
 import time
+import traceback
 from copy import deepcopy
 from functools import partial
 from functools import wraps
-import traceback
 
 import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
@@ -27,12 +28,16 @@ from invertible.coupling import CouplingLayer
 from invertible.distribution import (
     PerDimWeightedMix,
     NClassIndependentDist,
-    MaskedMixDist, ClassWeightedGaussianMixture, ClassWeightedPerDimGaussianMixture,
+    MaskedMixDist,
+    ClassWeightedGaussianMixture,
+    ClassWeightedPerDimGaussianMixture,
+    ClassWeightedHierachicalGaussianMixture, PerClassHierarchical,
 )
 from invertible.expression import Expression
 from invertible.graph import Node
 from invertible.init import init_all_modules
 from invertible.inverse import Inverse
+import invertibleeeg.models.conv
 from invertible.permute import InvPermute, Shuffle
 from invertible.sequential import InvertibleSequential
 from invertible.split_merge import ChunkChansIn2, ChansFraction
@@ -41,10 +46,9 @@ from invertible.view_as import Flatten2d
 from invertibleeeg.datasets import (
     load_train_valid_test_bcic_iv_2a,
     load_train_valid_test_hgd,
-    load_tuh_abnormal,
 )
-from invertibleeeg.experiments.bcic_iv_2a import train_glow
 from invertibleeeg.models.glow import get_splitter
+from invertibleeeg.train import train_glow
 from ..factors import MultiplyFactors
 from ..models.cropped import CroppedGlow
 from ..models.glow_linear_clf import GlowLinearClassifier
@@ -313,7 +317,18 @@ def coupling_block(
     channel_permutation="none",
     fraction_unchanged=0.5,
     eps=0,
+    first_conv_class_name=None
 ):
+    if first_conv_class_name is None:
+        first_conv_class = nn.Conv1d
+    else:
+        first_conv_class = {
+            "conv1d": nn.Conv1d,
+            "separate_temporal_channel_conv_fixed": invertibleeeg.models.conv.SeparateTemporalChannelConvFixed,
+            "twostepspatialtemporalconv": invertibleeeg.models.conv.TwoStepSpatialTemporalConv,
+            "twostepspatialtemporalconvfixed": invertibleeeg.models.conv.TwoStepSpatialTemporalConvFixed,
+            "twostepspatialtemporalconvmerged": invertibleeeg.models.conv.TwoStepSpatialTemporalConvMerged,
+        }[first_conv_class_name]
     n_unchanged = int(np.round(n_chans * fraction_unchanged))
     n_changed = n_chans - n_unchanged
     assert nonlin is not None
@@ -355,7 +370,7 @@ def coupling_block(
         ChansFraction(n_unchanged=n_unchanged, swap_dims=swap_dims),
         CoefClass(
             nn.Sequential(
-                nn.Conv1d(
+                first_conv_class(
                     n_unchanged,
                     hidden_channels,
                     kernel_length,
@@ -646,8 +661,15 @@ def init_model_encoding(
     n_real_chans,
     n_classes,
     dist_lr,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
+    init_dist_weight_std,
+    init_dist_mean_std,
+    init_dist_std_std,
 ):
-    init_dist_std = 0.1
+    init_dist_std = 1e-1
     n_mixes = 8
     n_chans = n_real_chans + n_virtual_chans
 
@@ -705,7 +727,7 @@ def init_model_encoding(
             optimize_std=True,
         ),
         # for debugging
-        "weighteddimgaussianmix":functools.partial(
+        "weighteddimgaussianmix": functools.partial(
             ClassWeightedPerDimGaussianMixture,
             n_classes=n_classes,
             n_mixes=32,
@@ -714,7 +736,34 @@ def init_model_encoding(
             optimize_mean=True,
             optimize_std=True,
         ),
-
+        "hierarchical": functools.partial(
+            ClassWeightedHierachicalGaussianMixture,
+            n_classes=n_classes,
+            n_overall_mixes=n_overall_mixes,
+            n_dim_mixes=n_dim_mixes,
+            n_dims=n_dims,
+            reduce_per_dim=reduce_per_dim,
+            reduce_overall_mix=reduce_overall_mix,
+            init_weight_std=init_dist_weight_std,
+            init_mean_std=init_dist_mean_std,
+            init_std_std=init_dist_std_std,
+            optimize_mean=True,
+            optimize_std=True,
+        ),
+        "perclasshierarchical": functools.partial(
+            PerClassHierarchical,
+            n_classes=n_classes,
+            n_overall_mixes=n_overall_mixes,
+            n_dim_mixes=n_dim_mixes,
+            n_dims=n_dims,
+            reduce_per_dim=reduce_per_dim,
+            reduce_overall_mix=reduce_overall_mix,
+            init_weight_std=init_dist_weight_std,
+            init_mean_std=init_dist_mean_std,
+            init_std_std=init_dist_std_std,
+            optimize_mean=True,
+            optimize_std=True,
+        ),
     }
 
     wanted_dist_module = rng.choice(dist_module_choices)
@@ -868,6 +917,13 @@ def run_exp(
     n_tuh_recordings,
     dist_lr,
     n_virtual_classes,
+    n_overall_mixes,
+    n_dim_mixes,
+    reduce_per_dim,
+    reduce_overall_mix,
+    init_dist_weight_std,
+    init_dist_mean_std,
+    init_dist_std_std,
 ):
     noise_factor = 5e-3
     start_time = time.time()
@@ -894,9 +950,29 @@ def run_exp(
             exponential_standardize=exponential_standardize,
         )
     elif dataset_name == "tuh":
-        train_set, valid_set, test_set = load_tuh_abnormal(
-            n_recordings_to_load=n_tuh_recordings
+        # train_set, valid_set, test_set = load_tuh_abnormal(
+        #    n_recordings_to_load=n_tuh_recordings
+        # )
+        log.info("Load TUH data from pickle...")
+        datasets = pickle.load(
+            open(
+                "/work/dlclarge1/schirrmr-renormalized-flows/tuh_train_valid_test_64_hz_clipped.pkl",
+                "rb",
+            )
         )
+        log.info("Done.")
+        train_set = datasets["train"]
+        valid_set = datasets["valid"]
+        test_set = datasets["test"]
+        # if in_clip_val is not None:
+        #     train_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+        #     valid_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+        #     test_set.transform = partial(np.clip, a_min=-in_clip_val, a_max=in_clip_val)
+
+        if n_tuh_recordings is not None:
+            train_set = th.utils.data.Subset(train_set, range(n_tuh_recordings))
+            valid_set = th.utils.data.Subset(valid_set, range(n_tuh_recordings))
+            test_set = th.utils.data.Subset(test_set, range(n_tuh_recordings))
     else:
         assert dataset_name == "hgd"
         train_set, valid_set, test_set = load_train_valid_test_hgd(
@@ -1017,6 +1093,13 @@ def run_exp(
                     n_real_chans=n_real_chans,
                     n_classes=n_classes,
                     dist_lr=dist_lr,
+                    n_overall_mixes=n_overall_mixes,
+                    n_dim_mixes=n_dim_mixes,
+                    reduce_per_dim=reduce_per_dim,
+                    reduce_overall_mix=reduce_overall_mix,
+                    init_dist_weight_std=init_dist_weight_std,
+                    init_dist_mean_std=init_dist_mean_std,
+                    init_dist_std_std=init_dist_std_std,
                 )
                 last_metric_val = np.inf
                 model_to_train = encoding["node"].cuda()
@@ -1168,7 +1251,9 @@ def run_exp(
                 except FileNotFoundError:
                     population_df = pd.DataFrame()
 
-                this_dict = dict(folder=output_dir, parent_folder=parent_folder, **metrics)
+                this_dict = dict(
+                    folder=output_dir, parent_folder=parent_folder, **metrics
+                )
                 population_df = population_df.append(this_dict, ignore_index=True)
                 population_df.to_csv(csv_file, index_label="pop_id")
 

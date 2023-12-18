@@ -116,7 +116,7 @@ def run(
 ):
     if debug:
         n_max_epochs = 2
-        n_tuh_recordings = 300
+        n_tuh_recordings = 258
     kwargs = locals()
     kwargs.pop("ex")
     if not debug:

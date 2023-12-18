@@ -37,7 +37,8 @@ def get_sensor_pos(sensor_name, sensor_map=tight_tuh_positions):
 def plot_head_signals_tight(signals, sensor_names=None, figsize=(12, 7),
                             plot_args=None, hspace=0.35,
                             sensor_map=tight_tuh_positions,
-                            tsplot=False, sharex=True, sharey=True):
+                            tsplot=False, sharex=True, sharey=True, show_sensor_names=True,
+                            channel_fontsize=None):
     assert sensor_names is None or len(signals) == len(sensor_names), ("need "
                                                                        "sensor names for all sensor matrices")
     assert sensor_names is not None
@@ -84,6 +85,202 @@ def plot_head_signals_tight(signals, sensor_names=None, figsize=(12, 7),
             ax.plot(signal, **plot_args)
         else:
             seaborn.tsplot(signal.T, ax=ax, **plot_args)
+        if show_sensor_names:
+            ax.set_title(sensor_name, fontsize=channel_fontsize)
+        ax.set_yticks([])
+        if len(signal) == 600:
+            ax.set_xticks([150, 300, 450])
+            ax.set_xticklabels([])
+        else:
+            ax.set_xticks([])
+
+        ax.xaxis.grid(True)
+        # make line at zero
+        ax.axhline(y=0, ls=':', color="grey")
+        figure.subplots_adjust(hspace=hspace)
+    return figure
+
+
+def plot_head_signals_tight_on_top(signals, sensor_names=None, figsize=(24, 14),
+                                   plot_args=None, hspace=0.35, wspace=0.2,
+                                   sensor_map=tight_tuh_positions, sharex=True, sharey=True):
+    assert sensor_names is None or len(signals) == len(sensor_names), "need sensor names for all sensor matrices"
+    assert sensor_names is not None
+    if plot_args is None:
+        plot_args = dict()
+    figure = plt.figure(figsize=figsize)
+    sensor_positions = [get_sensor_pos(name, sensor_map) for name in
+                        sensor_names]
+    sensor_positions = np.array(sensor_positions)  # sensors x 2(row and col)
+    maxima = np.max(sensor_positions, axis=0)
+    minima = np.min(sensor_positions, axis=0)
+    max_row = maxima[0]
+    max_col = maxima[1]
+    min_row = minima[0]
+    min_col = minima[1]
+    rows = (max_row - min_row + 1) * (signals.shape[-1] + 1)
+    cols = (max_col - min_col + 1)
+    first_ax = None
+
+    for i in range(len(signals)):
+        sensor_name = sensor_names[i]
+        sensor_pos = sensor_positions[i]
+        assert np.all(sensor_pos == get_sensor_pos(sensor_name, sensor_map))
+
+        # Transform to flat sensor pos
+        row = sensor_pos[0]
+        col = sensor_pos[1]
+
+        for j in range(signals.shape[-1]):
+            subplot_ind = ((row - min_row) * (signals.shape[-1] + 1) + j) * cols + (col - min_col) + 1
+            if first_ax is None:
+                ax = figure.add_subplot(rows, cols, subplot_ind)
+                first_ax = ax
+            elif sharex is True and sharey is True:
+                ax = figure.add_subplot(rows, cols, subplot_ind, sharey=first_ax, sharex=first_ax)
+            elif sharex is True and sharey is False:
+                ax = figure.add_subplot(rows, cols, subplot_ind, sharex=first_ax)
+            elif sharex is False and sharey is True:
+                ax = figure.add_subplot(rows, cols, subplot_ind, sharey=first_ax)
+            else:
+                ax = figure.add_subplot(rows, cols, subplot_ind)
+            for plot_j in range(signals.shape[-1]):
+                if plot_j == j:
+                    ax.plot(signals[i, :, plot_j], **plot_args)
+                else:
+                    ax.plot(signals[i, :, plot_j], **dict(**dict(alpha=0.8, lw=0.5), **plot_args))
+
+            if j == 0:
+                ax.set_title(sensor_name)
+
+            ax.set_yticks([])
+            ax.set_xticks([])
+
+            ax.xaxis.grid(True)
+            ax.axhline(y=0, ls=':', color="grey")
+
+    figure.subplots_adjust(hspace=hspace, wspace=wspace)
+    return figure
+
+
+def plot_head_signals_tight_gpt(signals, sensor_names=None, figsize=(24, 14),
+                            plot_args=None, hspace=0.35, wspace=0.2,
+                            sensor_map=tight_tuh_positions,
+                            tsplot=False, sharex=True, sharey=True):
+    assert sensor_names is None or len(signals) == len(sensor_names), "need sensor names for all sensor matrices"
+    assert sensor_names is not None
+    if plot_args is None:
+        plot_args = dict()
+    figure = plt.figure(figsize=figsize)
+    sensor_positions = [get_sensor_pos(name, sensor_map) for name in
+                        sensor_names]
+    sensor_positions = np.array(sensor_positions)  # sensors x 2(row and col)
+    maxima = np.max(sensor_positions, axis=0)
+    minima = np.min(sensor_positions, axis=0)
+    max_row = maxima[0]
+    max_col = maxima[1]
+    min_row = minima[0]
+    min_col = minima[1]
+    rows = max_row - min_row + 1
+    cols = (max_col - min_col + 1) * signals.shape[-1]
+    first_ax = None
+
+    for i in range(len(signals)):
+        sensor_name = sensor_names[i]
+        sensor_pos = sensor_positions[i]
+        assert np.all(sensor_pos == get_sensor_pos(sensor_name, sensor_map))
+
+        # Transform to flat sensor pos
+        row = sensor_pos[0]
+        col = sensor_pos[1]
+
+        for j in range(signals.shape[-1]):
+            subplot_ind = (row - min_row) * cols + (col - min_col) * signals.shape[-1] + j + 1
+            if first_ax is None:
+                ax = figure.add_subplot(rows, cols, subplot_ind)
+                first_ax = ax
+            elif sharex is True and sharey is True:
+                ax = figure.add_subplot(rows, cols, subplot_ind, sharey=first_ax, sharex=first_ax)
+            elif sharex is True and sharey is False:
+                ax = figure.add_subplot(rows, cols, subplot_ind, sharex=first_ax)
+            elif sharex is False and sharey is True:
+                ax = figure.add_subplot(rows, cols, subplot_ind, sharey=first_ax)
+            else:
+                ax = figure.add_subplot(rows, cols, subplot_ind)
+
+            signal = signals[i, :, j]
+            if tsplot is False:
+                ax.plot(signal, **plot_args)
+            else:
+                seaborn.tsplot(signal.T, ax=ax, **plot_args)
+
+            if j == 0:
+                ax.set_title(sensor_name)
+            else:
+                ax.set_title(f"{sensor_name} {j + 1}")
+
+            ax.set_yticks([])
+            if len(signal) == 600:
+                ax.set_xticks([150, 300, 450])
+                ax.set_xticklabels([])
+            else:
+                ax.set_xticks([])
+
+            ax.xaxis.grid(True)
+            ax.axhline(y=0, ls=':', color="grey")
+
+    figure.subplots_adjust(hspace=hspace, wspace=wspace)
+    return figure
+
+
+def plot_head_signals_tight_custom(signals, sensor_names=None, figsize=(12, 7),
+                            plot_args=None, hspace=0.35,
+                            sensor_map=tight_tuh_positions,
+                            sharex=True, sharey=True):
+    assert sensor_names is None or len(signals) == len(sensor_names), ("need "
+                                                                       "sensor names for all sensor matrices")
+    assert sensor_names is not None
+    if plot_args is None:
+        plot_args = dict()
+    figure = plt.figure(figsize=figsize)
+    sensor_positions = [get_sensor_pos(name, sensor_map) for name in
+                        sensor_names]
+    sensor_positions = np.array(sensor_positions)  # sensors x 2(row and col)
+    maxima = np.max(sensor_positions, axis=0)
+    minima = np.min(sensor_positions, axis=0)
+    max_row = maxima[0]
+    max_col = maxima[1]
+    min_row = minima[0]
+    min_col = minima[1]
+    rows = max_row - min_row + 1
+    cols = max_col - min_col + 1
+    first_ax = None
+    for i in range(0, len(signals)):
+        sensor_name = sensor_names[i]
+        sensor_pos = sensor_positions[i]
+        assert np.all(sensor_pos == get_sensor_pos(sensor_name, sensor_map))
+        # Transform to flat sensor pos
+        row = sensor_pos[0]
+        col = sensor_pos[1]
+        subplot_ind = (
+                                  row - min_row) * cols + col - min_col + 1  # +1 as matlab uses based indexing
+        if first_ax is None:
+            ax = figure.add_subplot(rows, cols, subplot_ind)
+            first_ax = ax
+        elif sharex is True and sharey is True:
+            ax = figure.add_subplot(rows, cols, subplot_ind, sharey=first_ax,
+                                    sharex=first_ax)
+        elif sharex is True and sharey is False:
+            ax = figure.add_subplot(rows, cols, subplot_ind,
+                                    sharex=first_ax)
+        elif sharex is False and sharey is True:
+            ax = figure.add_subplot(rows, cols, subplot_ind, sharey=first_ax)
+        else:
+            ax = figure.add_subplot(rows, cols, subplot_ind)
+
+        signal = signals[i]
+        ax.plot(signal[:,2:], **{**plot_args, **dict(lw=0.75)})
+        ax.plot(signal[:,:2], **plot_args)
         ax.set_title(sensor_name)
         ax.set_yticks([])
         if len(signal) == 600:

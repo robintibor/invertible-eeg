@@ -22,7 +22,7 @@ def get_grid_param_list():
 
     save_params = [
         {
-            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/neps/tuh-2sec-eps-1e-2/",
+            "save_folder": "/work/dlclarge1/schirrmr-renormalized-flows/exps/neps/tuh-hierarchical-dist/",
         },
     ]
 
@@ -30,8 +30,8 @@ def get_grid_param_list():
         {
             "subject_id": [None],  # 4
             "all_subjects_in_each_fold": [True],
-            "n_times_train": [144],
-            "n_times_eval": [144],
+            "n_times_train": [128],
+            "n_times_eval": [128],
             "sfreq": [64],  # 32
             "trial_start_offset_sec": [None],
             "split_valid_off_train": [True],
