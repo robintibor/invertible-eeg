@@ -6,7 +6,6 @@ from braindecode.datasets.moabb import MOABBDataset
 from braindecode.datasets.tuh import TUHAbnormal
 from braindecode.preprocessing import exponential_moving_standardize
 from braindecode.preprocessing import preprocess, Preprocessor
-from braindecode.preprocessing import scale
 from braindecode.preprocessing.windowers import create_fixed_length_windows
 from braindecode.preprocessing.windowers import create_windows_from_events
 from torch.utils.data import Subset
@@ -32,8 +31,7 @@ def load_and_preproc_bcic_iv_2a(
             "filter", l_freq=low_cut_hz, h_freq=high_cut_hz
         ),  # Bandpass filter
         Preprocessor(fn="resample", sfreq=sfreq),
-        Preprocessor(
-            scale, factor=1e6 / 6, apply_on_array=True
+        Preprocessor(lambda x: x * 1e6/6
         ),  # Convert from V to uV
     ]
 
@@ -422,7 +420,7 @@ def load_and_preproc_hgd(
         Preprocessor(
             "filter", l_freq=low_cut_hz, h_freq=high_cut_hz
         ),  # Bandpass filter
-        Preprocessor(scale, factor=1e6, apply_on_array=True),  # Convert from V to uV
+        Preprocessor(lambda x : x * 1e6),  # Convert from V to uV
         Preprocessor(fn=lambda x: x / 6),
         Preprocessor(fn="resample", sfreq=sfreq),
     ]
